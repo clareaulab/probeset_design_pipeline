@@ -1,0 +1,15 @@
+[project]
+name = "probeset-design-pipeline"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "biopython>=1.86",
+    "niquests>=3.16.1",
+    "numpy<2.0.0",
+    "pandas>=2.3.3",
+    "pyarrow>=14.0.2",
+    "pyensembl>=2.3.13",
+    "scipy>=1.17.0",
+    "tqdm>=4.67.1",
+]
