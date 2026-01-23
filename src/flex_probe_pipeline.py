@@ -20,7 +20,7 @@ from pyensembl import EnsemblRelease, Transcript
 from scipy.optimize import dual_annealing, brute, Bounds
 from tqdm.auto import tqdm
 
-from .utils import max_homopolymer_length, blast_search, transcriptome, rank_and_filter_transcripts, get_melting_temp, \
+from utils import max_homopolymer_length, blast_search, transcriptome, rank_and_filter_transcripts, get_melting_temp, \
     find_overlaps_with_flex, check_overlap_by_alignment, has_tandem_repeat, fetch_human_flex_v2_probeset, \
     fetch_mouse_visiumhd_probeset, fetch_mouse_flex_v1_probeset, fetch_mouse_flex_v2_probeset, \
     fetch_human_visiumhd_probeset, fetch_human_flex_v1_probeset
@@ -313,7 +313,7 @@ class SnvProbeHelper:
             snv_end_idx = snv_end
             # print(snv_start_idx, snv_end_idx)
 
-            if len(original_sequence) < snv_end_idx + self.config.rhs_probe_length and validate:
+            if len(original_sequence) < snv_end_idx + self.config.rhs_probe_length:  # and validate:  <- Needed to prevent string index errors
                 return None
 
             if snv_action == "mutation":
@@ -427,7 +427,7 @@ class SnvProbeHelper:
 
             transcript = None
             # Prioritize msk canonical transcript, else use support level and length
-            for candidate in sorted(transcript_candidates, key=lambda x: (1e8 if x.transcript_id in self.overrides.values() else 0, -(x.support_level or 0), x.length, ((x.biotype == 'protein_coding') + x.complete)), reverse=True):  # Sort by support level and length
+            for candidate in sorted(transcript_candidates, key=lambda x: (1e8 if x.transcript_id in self.overrides.values() else 0, -(x.support_level or 0), ((x.biotype == 'protein_coding') + x.complete), x.length), reverse=True):  # Sort by support level and length
                 if candidate.coding_sequence is not None:
                     transcript = candidate
                     if transcript is None:
@@ -1869,52 +1869,45 @@ class FlexProbeDesigner:
         elif len(expect_hits) == 0:
             expect_hits = [1] * len(transcript_sequences)
 
-        if os.path.exists('flex_probes.pkl'):
-            with open('flex_probes.pkl', 'rb') as f:
-                flex_probes = pickle.load(f)
-        else:
-            flex_probes = dict()
-            base_dir = Path(__file__).parent
-            flex_list = pd.read_csv(base_dir / 'Chromium_Human_Transcriptome_Probe_Set_v1.0.1_GRCh38-2020-A.csv', sep=',', comment='#')
-            checked_sequences = []
-            i = 0
-            for (name, sequence) in transcript_sequences.items():
-                sequence = sequence[0]
-                name = name.split(' ')[0]
-                if sequence not in checked_sequences:
-                    checked_sequences.append(sequence)
-                    for probe_seq in flex_list['probe_seq']:
-                        probe_gene_seq = reverse_complement(probe_seq)
-                        if probe_gene_seq in sequence:
-                            i += 1
-                            flex_probes[i] = Probe(
-                                transcript_name=name,
-                                rhs_probe = probe_seq[25:],
-                                lhs_probe = probe_seq[:25],
-                                rhs_gene_start = sequence.index(probe_gene_seq),
-                                lhs_gene_start = sequence.index(probe_gene_seq) + len(probe_seq[25:]),
-                                rhs_gene_sequence = reverse_complement(probe_seq[25:]),
-                                lhs_gene_sequence = reverse_complement(probe_seq[:25]),
-                                rhs_GC = (probe_seq[25:].count("G") + probe_seq[25:].count("C")) / len(probe_seq[25:]) if len(probe_seq[25:]) > 0 else 0.5,
-                                lhs_GC = (probe_seq[:25].count("G") + probe_seq[:25].count("C")) / len(probe_seq[:25]) if len(probe_seq[:25]) > 0 else 0.5,
-                                expected_blast_hits = 1,
-                                total_rhs_blast_hits = [],
-                                total_lhs_blast_hits = [],
-                                rhs_blast_hits = [],
-                                lhs_blast_hits = [],
-                                score = 0,
-                                transcript_sequence = sequence,
-                                gap_length = None,
-                                gap_probe_sequence = None,
-                                gap_gene_sequence = None,
-                                target_start_gap = None,
-                                target_end_gap = None,
-                                original_transcript_sequence = sequence,
-                                original_target_start_gap = None,
-                                original_target_end_gap = None,
-                            )
-            with open('flex_probes.pkl', 'wb') as f:
-                pickle.dump(flex_probes, f)
+        flex_probes = dict()
+        flex_list = self.reference_probes
+        checked_sequences = []
+        i = 0
+        for (name, sequence) in transcript_sequences.items():
+            sequence = sequence[0]
+            name = name.split(' ')[0]
+            if sequence not in checked_sequences:
+                checked_sequences.append(sequence)
+                for probe_seq in flex_list['probe_seq']:
+                    probe_gene_seq = reverse_complement(probe_seq)
+                    if probe_gene_seq in sequence:
+                        i += 1
+                        flex_probes[i] = Probe(
+                            transcript_name=name,
+                            rhs_probe = probe_seq[25:],
+                            lhs_probe = probe_seq[:25],
+                            rhs_gene_start = sequence.index(probe_gene_seq),
+                            lhs_gene_start = sequence.index(probe_gene_seq) + len(probe_seq[25:]),
+                            rhs_gene_sequence = reverse_complement(probe_seq[25:]),
+                            lhs_gene_sequence = reverse_complement(probe_seq[:25]),
+                            rhs_GC = (probe_seq[25:].count("G") + probe_seq[25:].count("C")) / len(probe_seq[25:]) if len(probe_seq[25:]) > 0 else 0.5,
+                            lhs_GC = (probe_seq[:25].count("G") + probe_seq[:25].count("C")) / len(probe_seq[:25]) if len(probe_seq[:25]) > 0 else 0.5,
+                            expected_blast_hits = 1,
+                            total_rhs_blast_hits = [],
+                            total_lhs_blast_hits = [],
+                            rhs_blast_hits = [],
+                            lhs_blast_hits = [],
+                            score = 0,
+                            transcript_sequence = sequence,
+                            gap_length = None,
+                            gap_probe_sequence = None,
+                            gap_gene_sequence = None,
+                            target_start_gap = None,
+                            target_end_gap = None,
+                            original_transcript_sequence = sequence,
+                            original_target_start_gap = None,
+                            original_target_end_gap = None,
+                        )
         for i, (transcript_name, transcript_sequence) in tqdm(enumerate(transcript_sequences.items()),
                                                               desc='Generating probes',
                                                               total=len(transcript_sequences),

@@ -7,7 +7,7 @@ import json
 import pandas as pd
 from pyensembl import species
 
-from .flex_probe_pipeline import HumanBackgroundFlexProbeConfig, MouseBackgroundFlexProbeConfig, FlexProbeDesigner, \
+from flex_probe_pipeline import HumanBackgroundFlexProbeConfig, MouseBackgroundFlexProbeConfig, FlexProbeDesigner, \
     SnvProbeHelper, FlexProbeConfig
 
 
