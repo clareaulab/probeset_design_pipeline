@@ -333,7 +333,10 @@ def transcriptome(genome: Genome, filter_incomplete: bool = True, filter_biotype
     transcriptome = dict()
     unnamed_count = 0
     for gene in genome.genes():
-        transcripts = rank_and_filter_transcripts(gene.transcripts, filter_transcripts=filter_incomplete)
+        try:
+            transcripts = rank_and_filter_transcripts(gene.transcripts, filter_transcripts=filter_incomplete)
+        except Exception:
+            continue  # Skip genes with annotation issues
         if len(transcripts) == 0:
             continue
         for transcript in transcripts:
@@ -343,7 +346,10 @@ def transcriptome(genome: Genome, filter_incomplete: bool = True, filter_biotype
                 unnamed_count += 1
             if filter_biotypes is not None and transcript.biotype in filter_biotypes:
                 continue
-            sequence = transcript.coding_sequence if transcript.complete else transcript.sequence
+            try:
+                sequence = transcript.coding_sequence if transcript.complete else transcript.sequence
+            except Exception:
+                continue  # Skip transcripts with annotation issues (e.g., duplicate exon IDs)
             if sequence is not None:
                 transcriptome[gene_name + " " + transcript.transcript_id] = sequence
     return transcriptome

@@ -1,9 +1,9 @@
 # GBM Probes
 
-This directly allows you to generate probes for GBM except for one manually designed splice variant probe.
+This directory contains inputs to generate probes for GBM variants.
 
-To generate the probes:
+## Generating Probes
 
 ```bash
-python src/app.py --config_file probe_sets/GBM/config.json probe_sets/GBM/inputs.csv GBM_probes
+python src/app.py --mane --skip_errors --config_file probe_sets/GBM/config.json probe_sets/GBM/inputs.csv GBM_probes
 ```

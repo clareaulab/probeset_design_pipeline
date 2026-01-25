@@ -93,6 +93,7 @@ class FlexProbeConfig:
     offtarget_penalty_base: float = 150.  # Penalize probes with off-target hits by exponentiating this value
     offtarget_must_be_same_gene: bool = True  # If true, only penalize off target hits based on the hits that appear on both the LHS and RHS
     existing_probe_penalty: float = 100.  # Penalty per overlapping position with an existing probe
+    max_probe_overlap: int = 0  # Maximum allowed overlap (in bp) between designed probes. Set to 0 to disallow any overlap.
     require_transcriptome_hit: bool = False  # If True, require probes to have a hit back to the transcriptome
     flex_overlap_penalty: float = 1e7  # Penalty for overlapping with a 10x flex probe
     tandem_repeat_penalty: float = 1e5 # Penalty for probe have >= 4 repeats of a sequence of at least 3bp
@@ -159,32 +160,70 @@ def GenomeBackgroundFlexProbeConfig(*, ensembl_release: int = 111, species: Spec
     return config, ensembl_genome
 
 
-def HumanBackgroundFlexProbeConfig(**kwargs) -> tuple[FlexProbeConfig, EnsemblRelease]:
+def HumanBackgroundFlexProbeConfig(ensembl_release: int = 111, **kwargs) -> tuple[FlexProbeConfig, EnsemblRelease]:
     """
     Build a Flex Probe configuration for the human genome as background.
     """
-    return GenomeBackgroundFlexProbeConfig(species=human, **kwargs)
+    return GenomeBackgroundFlexProbeConfig(ensembl_release=ensembl_release, species=human, **kwargs)
 
 
-def MouseBackgroundFlexProbeConfig(**kwargs) -> tuple[FlexProbeConfig, EnsemblRelease]:
+def MouseBackgroundFlexProbeConfig(ensembl_release: int = 111, **kwargs) -> tuple[FlexProbeConfig, EnsemblRelease]:
     """
     Build a Flex Probe configuration for the mouse genome as background.
     """
-    return GenomeBackgroundFlexProbeConfig(species=mouse, **kwargs)
+    return GenomeBackgroundFlexProbeConfig(ensembl_release=ensembl_release, species=mouse, **kwargs)
 
 
-def MskImpactSnvProbeHelper(config: FlexProbeConfig) -> 'SnvProbeHelper':
+def MskImpactSnvProbeHelper(config: FlexProbeConfig, genome: EnsemblRelease = None) -> 'SnvProbeHelper':
     """
     Create the SnvProbeHelper with isoform overrides from MSK IMPACT.
     """
     overrides = pd.read_csv(
-        "https://raw.githubusercontent.com/genome-nexus/genome-nexus-importer/master/data/common_input/isoform_overrides_at_mskcc_grch38.txt",
+        "https://raw.githubusercontent.com/genome-nexus/genome-nexus-importer/4c66ae73e1243ee473ce52322e6fe9cd37e753e3/data/common_input/isoform_overrides_oncokb_grch38.txt",
         sep="\t")
-    overrides = {row['gene_name']: row['enst_id'] for _, row in overrides.iterrows()}
+    overrides = {row['hugo_symbol']: row['enst_id'] for _, row in overrides.iterrows()}
     # Replace some outdated gene names
     return SnvProbeHelper(
         config=config,
-        transcript_overrides=overrides
+        transcript_overrides=overrides,
+        genome=genome,
+    )
+
+
+def load_mane_select_transcripts() -> dict[str, str]:
+    """
+    Load MANE Select transcript mappings from NCBI.
+    MANE (Matched Annotation from NCBI and Ensembl) provides agreed-upon canonical transcripts.
+
+    Returns a dict mapping gene symbol -> Ensembl transcript ID (without version).
+    """
+    mane_url = "https://ftp.ncbi.nlm.nih.gov/refseq/MANE/MANE_human/current/MANE.GRCh38.v1.5.summary.txt.gz"
+    try:
+        mane_df = pd.read_csv(mane_url, sep="\t", compression="gzip")
+        # Filter to MANE Select (not MANE Plus Clinical)
+        mane_select = mane_df[mane_df['MANE_status'] == 'MANE Select']
+        # Extract gene symbol and Ensembl transcript ID (remove version)
+        overrides = {}
+        for _, row in mane_select.iterrows():
+            gene = row['symbol']
+            enst = row['Ensembl_nuc'].split('.')[0]  # Remove version number
+            overrides[gene] = enst
+        return overrides
+    except Exception as e:
+        print(f"Warning: Could not load MANE Select data: {e}")
+        return {}
+
+
+def ManeSelectSnvProbeHelper(config: FlexProbeConfig, genome: EnsemblRelease = None) -> 'SnvProbeHelper':
+    """
+    Create the SnvProbeHelper with isoform overrides from MANE Select.
+    MANE Select provides the agreed-upon canonical transcript between RefSeq and Ensembl.
+    """
+    overrides = load_mane_select_transcripts()
+    return SnvProbeHelper(
+        config=config,
+        transcript_overrides=overrides,
+        genome=genome,
     )
 
 
@@ -428,16 +467,17 @@ class SnvProbeHelper:
             transcript = None
             # Prioritize msk canonical transcript, else use support level and length
             for candidate in sorted(transcript_candidates, key=lambda x: (1e8 if x.transcript_id in self.overrides.values() else 0, -(x.support_level or 0), ((x.biotype == 'protein_coding') + x.complete), x.length), reverse=True):  # Sort by support level and length
-                if candidate.coding_sequence is not None:
-                    transcript = candidate
-                    if transcript is None:
-                        continue
+                # Skip transcripts with missing or malformed coding_sequence
+                # Some pyensembl transcripts incorrectly include UTR in coding_sequence
+                if candidate.coding_sequence is None or not candidate.coding_sequence.startswith('ATG'):
+                    continue
+                transcript = candidate
 
-                    results = self.modify_gene_sequence(transcript, snv_start, snv_end, snv_action, snv_data, validate=validate)
-                    if results is None:
-                        continue
-                    else:
-                        return results
+                results = self.modify_gene_sequence(transcript, snv_start, snv_end, snv_action, snv_data, validate=validate)
+                if results is None:
+                    continue
+                else:
+                    return results
 
         raise ValueError(f"No correct protein coding transcripts found for {gene_name} with SNV at {snv_start}.")
 
@@ -980,9 +1020,12 @@ class FlexProbeDesigner:
                     new_start = start_idx
                     new_original_gap_length = len(original_gap_sequence) if is_gapfill else 0
                     new_end = start_idx + len(lhs_probe) + len(rhs_probe) + new_original_gap_length
+                    # Calculate overlap amount
                     if not ((new_end < existing_start) or (new_start > existing_end)):
-                        carryover_visits[carryover_key] = self.config.invalid_score
-                        return self.config.invalid_score
+                        overlap_amount = min(new_end, existing_end) - max(new_start, existing_start)
+                        if overlap_amount > self.config.max_probe_overlap:
+                            carryover_visits[carryover_key] = self.config.invalid_score
+                            return self.config.invalid_score
 
         # Skip if manually excluded
         if (reverse_complement(lhs_probe),reverse_complement(rhs_probe)) in self.config.exclude_probes:
@@ -1101,7 +1144,6 @@ class FlexProbeDesigner:
             print("WARNING: Fast mode is only compatible with a single probe."
                   "Falling back to slow mode.")
             fast = False
-        base_dir = Path(__file__).parent
         is_gapfill = target_start is not None
         target_length = None
 

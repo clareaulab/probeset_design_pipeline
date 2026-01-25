@@ -19,6 +19,7 @@
   "rhs_tm_penalty": -2,
   "flex_overlap_penalty": 1e7,
   "tandem_repeat_penalty": 1e6,
+  "max_probe_overlap": 5,
   "exclude_probes": [
     ["CCGACTCGCCGGGCAGAGCGCAGCC", "AGCAGCGCCAGGAGCGCTGCCCCGG"],
     ["GCTTGTTACTCGTGCCTTGGCAAAC", "TTTCTTTTCCTCCAGAGCCCGACTC"]

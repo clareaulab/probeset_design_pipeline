@@ -44,11 +44,15 @@ python src/app.py [OPTIONS] <targets> <output_name>
 | `--technology` | FlexV1 | Platform: `FlexV1`, `FlexV2`, or `VisiumHD` |
 | `--barcodes` | 1 | Number of barcodes for multiplexing (Flex v1 only, max 16) |
 | `--output_format` | tsv | Output format: `csv`, `tsv`, or `xlsx` |
+| `--skip_errors` | false | Skip targets that fail (gene not found, invalid variant) instead of aborting |
+| `--mane` | false | Use MANE Select canonical transcripts (recommended for reproducibility) |
+| `--msk` | false | Use MSK IMPACT canonical transcript overrides |
+| `--release` | 111 | Ensembl release version to use |
 
 ### Example
 
 ```bash
-python src/app.py --config_file probe_sets/GBM/config.json probe_sets/GBM/inputs.csv GBM_probes
+python src/app.py --mane --skip_errors --config_file probe_sets/GBM/config.json probe_sets/GBM/inputs.csv GBM_probes
 ```
 
 ## Input Format
@@ -84,6 +88,19 @@ Use `0bp` for wildtype probes targeting a gene without a specific variant (e.g.,
 
 Ensembl transcript IDs are also accepted in place of gene symbols (e.g., `ENST00000275493 c.2582T>G`).
 
+## Transcript Selection
+
+The pipeline fetches transcript sequences from Ensembl. Transcript isoform selection significantly affects probe sequences since HGVSc positions are relative to the coding sequence.
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| Default | (none) | Selects longest complete transcript for each gene |
+| MANE Select | `--mane` | Uses NCBI/Ensembl agreed-upon canonical transcripts (recommended) |
+| MSK IMPACT | `--msk` | Uses MSK-IMPACT canonical transcript overrides |
+| Explicit | (none) | Use Ensembl transcript ID instead of gene symbol |
+
+**Recommendation**: Use `--mane` for reproducibility. MANE Select provides stable, standardized transcript selection agreed upon by NCBI and Ensembl.
+
 ## Configuration
 
 Configuration files control probe design parameters. See `probe_sets/GBM/config.json` for an example.
@@ -98,6 +115,7 @@ Configuration files control probe design parameters. See `probe_sets/GBM/config.
 | `tx_max_gc` | 0.8 | Maximum GC content for probes |
 | `strict_gc_content` | true | Reject probes outside GC bounds (vs. penalize) |
 | `add_probes_to_blast` | true | Add accepted probes to BLAST database for off-target checking |
+| `max_probe_overlap` | 5 | Maximum allowed overlap between probes in bp |
 | `exclude_probes` | [] | List of [lhs, rhs] sequence pairs to exclude |
 
 ### Scoring Penalties
