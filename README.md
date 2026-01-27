@@ -7,6 +7,9 @@ This repository contains the pipeline for designing custom gap-filling probes co
 - Python 3.12+
 - NCBI BLAST+ command-line tools (`makeblastdb`, `blastn`) must be installed and available in PATH
 
+Note: The repo also supports installing dependencies with [pixi](https://pixi.prefix.dev/latest/) which will automatically 
+install python and blast into a virtual environment.
+
 ## Installation
 
 ```bash
@@ -14,10 +17,13 @@ This repository contains the pipeline for designing custom gap-filling probes co
 git clone <repository-url>
 cd probeset_design_pipeline
 
-# Install dependencies (using uv or pip)
+# Install dependencies using uv or pip, assumes blast is already installed
 uv sync
 # or
 pip install -e .
+
+# Install dependencies with pixi (includes python and blast)
+pixi install
 ```
 
 On first run, the pipeline will download Ensembl genome annotations to `./ensembl_cache/`. This may take several minutes.

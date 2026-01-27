@@ -20,9 +20,7 @@ gtfparse = { git = "https://github.com/openvax/gtfparse" }
 
 [tool.pixi.workspace]
 channels = ["conda-forge", "bioconda"]
-platforms = ["osx-arm64"]
+platforms = ["linux-64", "osx-arm64", "osx-64"]
 
-[tool.pixi.pypi-dependencies]
-probeset-design-pipeline = { path = ".", editable = true }
-
-[tool.pixi.tasks]
+[tool.pixi.dependencies]
+blast = ">=2.16.0,<3"
