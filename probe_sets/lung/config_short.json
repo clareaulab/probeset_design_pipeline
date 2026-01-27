@@ -1,0 +1,28 @@
+{
+  "lhs_probe_length": 23,
+  "rhs_probe_length": 25,
+  "bias_longer_gaps": false,
+  "tx_min_gc": 0.2,
+  "tx_max_gc": 0.8,
+  "strict_gc_content": false,
+  "lenient_gc_penalty": 1e8,
+  "max_bridge_length": 10,
+  "min_bridge_length": 2,
+  "add_probes_to_blast": true,
+  "last_base_penalty": 1e8,
+  "first_base_penalty": 30,
+  "flexible_probe_length_range": 0,
+  "suboptimal_gap_penalty": 10,
+  "invalid_gap_penalty": 1e8,
+  "distance_from_max_bridge_length_penalty": 8,
+  "unbalanced_gc_penalty": 1,
+  "homopolymer_penalty": 2,
+  "lhs_tm_penalty": 1,
+  "rhs_tm_penalty": -1,
+  "flex_overlap_penalty": 1e7,
+  "tandem_repeat_penalty": 1e6,
+  "exclude_probes": [
+    ["AATTACTACTTGCTTCCTGTAGGAA", "TCCTCTATTGTTGGATCATATTCGT"],
+    ["CGGATGCGCCGCTGCTTGCGCTTCT", "CGTTGAGGCCGCCGTGGTCCGTGAA"]
+  ]
+}

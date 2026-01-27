@@ -1,0 +1,7 @@
+{
+  "bias_longer_gaps": false,
+  "tx_min_gc": 0.2,
+  "tx_max_gc": 0.8,
+  "strict_gc_content": true,
+  "max_bridge_length": 10
+}

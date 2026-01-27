@@ -4,11 +4,15 @@ from pathlib import Path
 from typing import Optional, Literal
 import json
 
+import numpy as np
 import pandas as pd
 from pyensembl import species
 
 from flex_probe_pipeline import HumanBackgroundFlexProbeConfig, MouseBackgroundFlexProbeConfig, FlexProbeDesigner, \
     SnvProbeHelper, FlexProbeConfig, MskImpactSnvProbeHelper, ManeSelectSnvProbeHelper
+
+# Set random seed for reproducibility
+np.random.seed(42)
 
 
 def main(
@@ -159,7 +163,7 @@ def main(
     elif output_format == "xlsx":
         probe_df.to_excel(f"{name}.xlsx", index=False)
 
-    print(f"Generated {len(probe_df)} probes and saved to 'designed_probes.{output_format}'.")
+    print(f"Generated {len(probe_df)} probes and saved to {name}.{output_format}'.")
 
 
 if __name__ == "__main__":
