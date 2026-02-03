@@ -93,7 +93,7 @@ class FlexProbeConfig:
     offtarget_penalty_base: float = 150.  # Penalize probes with off-target hits by exponentiating this value
     offtarget_must_be_same_gene: bool = True  # If true, only penalize off target hits based on the hits that appear on both the LHS and RHS
     existing_probe_penalty: float = 100.  # Penalty per overlapping position with an existing probe
-    max_probe_overlap: int = 0  # Maximum allowed overlap (in bp) between designed probes. Set to 0 to disallow any overlap.
+    max_probe_overlap: int = -1  # Maximum allowed overlap (in bp) between designed probes. Set to 0 to disallow any overlap. Set to -1 to ignore overlap.
     require_transcriptome_hit: bool = False  # If True, require probes to have a hit back to the transcriptome
     flex_overlap_penalty: float = 1e7  # Penalty for overlapping with a 10x flex probe
     tandem_repeat_penalty: float = 1e5 # Penalty for probe have >= 4 repeats of a sequence of at least 3bp
@@ -250,6 +250,7 @@ class SnvProbeHelper:
         else:
             self.overrides = transcript_overrides
         self.config = config
+        self.last_transcript_id = None  # Stores the transcript ID used in the last get_gene_sequence call
 
     def create_probe_args(self,
                           gene_name: str,
@@ -295,6 +296,7 @@ class SnvProbeHelper:
         """
         if isinstance(transcript, str):
             original_sequence = transcript  # String, so don't check exons
+            is_coding = False
         # elif snv_start is not None:  # We are targetting an snv, so we should check for exon junctions
         #     exon_lhs_check_range = self.config.lhs_probe_length + self.config.max_bridge_length + self.config.flexible_probe_length_range
         #     exon_rhs_check_range = self.config.rhs_probe_length + self.config.max_bridge_length + self.config.flexible_probe_length_range
@@ -338,7 +340,13 @@ class SnvProbeHelper:
         #                 else:
         #                     lhs_intron_sequence += transcript.coding_sequence[exon[0]:exon[1]]
         else:
-            original_sequence = transcript.coding_sequence
+            try:
+                original_sequence = transcript.coding_sequence
+                is_coding = True
+            except ValueError:
+                # Transcript doesn't have a start codon, fall back to full sequence
+                original_sequence = transcript.sequence
+                is_coding = False
 
         if snv_action == '0bp':
             mutated_sequence = original_sequence
@@ -352,7 +360,16 @@ class SnvProbeHelper:
             snv_end_idx = snv_end
             # print(snv_start_idx, snv_end_idx)
 
-            if len(original_sequence) < snv_end_idx + self.config.rhs_probe_length:  # and validate:  <- Needed to prevent string index errors
+            if len(original_sequence) < snv_end_idx + self.config.rhs_probe_length and validate: # <- Needed to prevent string index errors
+                if is_coding:  # Retry with the full sequence
+                    return self.modify_gene_sequence(
+                        transcript.sequence,
+                        snv_start,
+                        snv_end,
+                        snv_action,
+                        snv_data,
+                        validate=validate
+                    )
                 return None
 
             if snv_action == "mutation":
@@ -360,6 +377,15 @@ class SnvProbeHelper:
                 # assert from_nucleotide == original_sequence[snv_start], "SNV data does not match the original sequence."
                 if from_nucleotide != original_sequence[snv_start_idx] and to_nucleotide != '*' and validate:
                     # print("SNV data does not match the original sequence.", from_nucleotide, to_nucleotide, original_sequence[snv_start_idx-1:snv_start_idx+2])
+                    if is_coding:  # Retry with the full sequence
+                        return self.modify_gene_sequence(
+                            transcript.sequence,
+                            snv_start,
+                            snv_end,
+                            snv_action,
+                            snv_data,
+                            validate=validate
+                        )
                     return None
                 mutated_sequence = original_sequence[:snv_start_idx] + to_nucleotide + original_sequence[snv_end_idx:]
                 mutated_snv_start = snv_start
@@ -371,6 +397,15 @@ class SnvProbeHelper:
                 # assert inverted_sequence == conversion, "SNV data does not match the inverted sequence."
                 if inverted_sequence != conversion and validate:
                     # print("SNV data does not match the inverted sequence.")
+                    if is_coding:  # Retry with the full sequence
+                        return self.modify_gene_sequence(
+                            transcript.sequence,
+                            snv_start,
+                            snv_end,
+                            snv_action,
+                            snv_data,
+                            validate=validate
+                        )
                     return None
                 mutated_sequence = original_sequence[:snv_start_idx] + inverted_sequence + original_sequence[snv_end_idx:]
                 mutated_snv_start = snv_start
@@ -395,6 +430,15 @@ class SnvProbeHelper:
                 # Note that the duplication index is to the left of the duplicated nucleotide
                 if not original_sequence[snv_start_idx:snv_end_idx].startswith(duplicated) and validate:
                     # print("SNV data does not match the original sequence.")
+                    if is_coding:  # Retry with the full sequence
+                        return self.modify_gene_sequence(
+                            transcript.sequence,
+                            snv_start,
+                            snv_end,
+                            snv_action,
+                            snv_data,
+                            validate=validate
+                        )
                     return None
                 if duplicated == '':
                     # If the duplicated sequence is empty, we just insert the original sequence
@@ -408,6 +452,15 @@ class SnvProbeHelper:
                 mutated_snv_start = snv_start
                 mutated_snv_end = snv_end
             else:
+                if is_coding:  # Retry with the full sequence
+                    return self.modify_gene_sequence(
+                        transcript.sequence,
+                        snv_start,
+                        snv_end,
+                        snv_action,
+                        snv_data,
+                        validate=validate
+                    )
                 return None
         else:
             mutated_sequence = original_sequence
@@ -427,7 +480,7 @@ class SnvProbeHelper:
                           snv_action: Literal["mutation", "inversion", "deletion", "insertion", "deletion-insertion", "duplication"] = None,
                           snv_data: str | int | None = None,
                           transcript_sequence: str | None = None,
-                          validate: bool = False) -> list[tuple[str, str, int, int]]:
+                          validate: bool = True) -> list[tuple[str, str, int, int]]:
         """
         Get the sequence of a gene from the genome.
         :param gene_name: The name of the gene.
@@ -440,6 +493,7 @@ class SnvProbeHelper:
         :return: Original gene sequence, the mutated gene sequence, and the region of interest within the mutated sequence.
         """
         if transcript_sequence is not None:
+            self.last_transcript_id = None  # No transcript ID when sequence provided directly
             results = self.modify_gene_sequence(transcript_sequence, snv_start, snv_end, snv_action, snv_data, validate=validate)
             if results is None:
                 raise ValueError("Invalid SNV for " + gene_name + " at " + str(snv_start))
@@ -449,6 +503,7 @@ class SnvProbeHelper:
             # FIXME: Currently doesn't accept versions so we are assuming that hte latest versoin was provided
             # https://github.com/openvax/pyensembl/issues/242
             transcript = self.genome.transcript_by_id(gene_name.split(".")[0])
+            self.last_transcript_id = transcript.transcript_id
             results = self.modify_gene_sequence(transcript, snv_start, snv_end, snv_action, snv_data, validate=validate)
             if results is not None:
                 return results
@@ -469,14 +524,20 @@ class SnvProbeHelper:
             for candidate in sorted(transcript_candidates, key=lambda x: (1e8 if x.transcript_id in self.overrides.values() else 0, -(x.support_level or 0), ((x.biotype == 'protein_coding') + x.complete), x.length), reverse=True):  # Sort by support level and length
                 # Skip transcripts with missing or malformed coding_sequence
                 # Some pyensembl transcripts incorrectly include UTR in coding_sequence
-                if candidate.coding_sequence is None or not candidate.coding_sequence.startswith('ATG'):
-                    continue
+                try:
+                    coding_seq = candidate.coding_sequence
+                    # if coding_seq is None:
+                    #     coding_seq = candidate.sequence
+                except ValueError:
+                    # Transcript doesn't have a start codon - use full sequence for this candidate
+                    pass
                 transcript = candidate
 
                 results = self.modify_gene_sequence(transcript, snv_start, snv_end, snv_action, snv_data, validate=validate)
                 if results is None:
                     continue
                 else:
+                    self.last_transcript_id = transcript.transcript_id
                     return results
 
         raise ValueError(f"No correct protein coding transcripts found for {gene_name} with SNV at {snv_start}.")
@@ -1008,7 +1069,7 @@ class FlexProbeDesigner:
                 full_original_contig = rhs_probe + original_gap_sequence + lhs_probe
 
             if full_original_contig not in original_transcript_sequence:
-                print('ERROR finding original contig for:',transcript_name, rhs_probe, original_gap_sequence, lhs_probe)
+                print('WARNING: unable to find original contig for:',transcript_name, rhs_probe, original_gap_sequence, lhs_probe)
 
         # Check for overlap with existing probes
         for name in existing_probes.keys():
@@ -1023,7 +1084,7 @@ class FlexProbeDesigner:
                     # Calculate overlap amount
                     if not ((new_end < existing_start) or (new_start > existing_end)):
                         overlap_amount = min(new_end, existing_end) - max(new_start, existing_start)
-                        if overlap_amount > self.config.max_probe_overlap:
+                        if self.config.max_probe_overlap >= 0 and overlap_amount > self.config.max_probe_overlap:
                             carryover_visits[carryover_key] = self.config.invalid_score
                             return self.config.invalid_score
 
@@ -1122,7 +1183,8 @@ class FlexProbeDesigner:
                                           fast: bool = False,
                                           existing_probes: dict[str, list[Probe]] = None,
                                           flex_probes: dict[str, list[Probe]] = None,
-                                          predefined_lhs: str = None
+                                          predefined_lhs: str = None,
+                                          search_method: str = None
                                           ) -> list[Probe]:
         """
         Create probes for a transcript using simulated annealing.
@@ -1138,6 +1200,7 @@ class FlexProbeDesigner:
         :param max_iterations: The maximum number of iterations to perform within the simulated annealing.
         :param initial_temp: The initial temperature of the simulated annealing.
         :param fast: If True, we will use a fast approximate search for only "optimal" probes, rather than a full search.
+        :param search_method: Force a specific search method. 'brute_force' for exhaustive search, 'optimization' for dual annealing. None for automatic selection.
         :return: The list of probes.
         """
         if fast and n_probes > 1:
@@ -1241,8 +1304,13 @@ class FlexProbeDesigner:
                 bounds.append((-self.config.flexible_probe_length_range, self.config.flexible_probe_length_range))
         # Compute the number of possibilities if we were to search the entire space
         possible_variations = np.prod([b[1] - b[0] + 1 for b in bounds])
-        # If the number of variations is low, just do a brute force search
-        if possible_variations <= max_iterations:
+        # Determine search method: use forced method if specified, otherwise auto-select
+        if search_method == 'brute_force':
+            brute_force = True
+        elif search_method == 'optimization':
+            brute_force = False
+        elif possible_variations <= max_iterations:
+            # If the number of variations is low, just do a brute force search
             brute_force = True
         else:
             brute_force = False
@@ -1552,7 +1620,8 @@ class FlexProbeDesigner:
                            initial_temp: float = 500.,
                            fast: bool = False,
                            existing_probes: dict[str, list[Probe]] = None,
-                           flex_probes: dict[str, list[Probe]] = None
+                           flex_probes: dict[str, list[Probe]] = None,
+                           search_method: str = None
                            ) -> list[Probe]:
         """
         Create vanilla non-gap-filling probes for a transcript. Because of the large search space, we will perform
@@ -1564,6 +1633,7 @@ class FlexProbeDesigner:
         :param max_iterations: The maximum number of iterations to perform within the simulated annealing.
         :param initial_temp: The initial temperature of the simulated annealing.
         :param fast: If True, we will use a fast approximate search for only "optimal" probes, rather than a full search. Also skips BLAST searches.
+        :param search_method: Force a specific search method. 'brute_force' for exhaustive search, 'optimization' for dual annealing. None for automatic selection.
         :return: The list of probes.
         """
         return self._simulated_annealing_probe_search(
@@ -1575,7 +1645,8 @@ class FlexProbeDesigner:
             initial_temp=initial_temp,
             fast=fast,
             existing_probes=existing_probes,
-            flex_probes=flex_probes
+            flex_probes=flex_probes,
+            search_method=search_method
         )
 
     def create_gapfilling_flex_probes(self,
@@ -1593,7 +1664,8 @@ class FlexProbeDesigner:
                                       fast: bool = False,
                                       existing_probes: dict[str, list[Probe]] = None,
                                       flex_probes: dict[str, list[Probe]] = None,
-                                      predefined_lhs: str = None
+                                      predefined_lhs: str = None,
+                                      search_method: str = None
                                       ) -> list[Probe]:
         """
         Create gap-filling probes for a transcript. Because of the large search space, we will perform
@@ -1610,6 +1682,7 @@ class FlexProbeDesigner:
         :param max_iterations: The maximum number of iterations to perform within the simulated annealing.
         :param initial_temp: The initial temperature of the simulated annealing.
         :param fast: If True, we will use a fast approximate search for only "optimal" probes, rather than a full search. Also skips BLAST searches.
+        :param search_method: Force a specific search method. 'brute_force' for exhaustive search, 'optimization' for dual annealing. None for automatic selection.
         :return: The list of probes.
         """
         return self._simulated_annealing_probe_search(
@@ -1627,7 +1700,8 @@ class FlexProbeDesigner:
             fast=fast,
             existing_probes=existing_probes,
             flex_probes=flex_probes,
-            predefined_lhs=predefined_lhs
+            predefined_lhs=predefined_lhs,
+            search_method=search_method
         )
 
     def convert_probe_set_to_df(self, probes: dict[str, list[Probe]], visium: bool = False, truseq: bool = False, barcode: int | list[int] = 0) -> pd.DataFrame:
@@ -1762,7 +1836,8 @@ class FlexProbeDesigner:
                                    visium: bool = False,
                                    truseq: bool = False,
                                    fast: bool = False,
-                                   barcode: int | list[int] = 0) -> pd.DataFrame:
+                                   barcode: int | list[int] = 0,
+                                   search_method: str = None) -> pd.DataFrame:
         """
         Create a set of probes for a given set of sequences.
         :param transcript_sequences: The sequences to target.
@@ -1774,6 +1849,7 @@ class FlexProbeDesigner:
         :param truseq: Whether to replace the standard handle with the TruSeq handle.
         :param fast: If True, we will use a fast approximate search for only "optimal" probes, rather than a full search.
         :param barcode: The barcode(s) to use for the probe.
+        :param search_method: Force a specific search method. 'brute_force' for exhaustive search, 'optimization' for dual annealing. None for automatic selection.
         :return: The dataframe result. Or if visium is True, a tuple of the flex probe dataframe and the visium probe dataframe.
         """
         all_probes = dict()
@@ -1841,7 +1917,8 @@ class FlexProbeDesigner:
                 initial_temp,
                 existing_probes=all_probes,
                 flex_probes=flex_probes,
-                fast=fast
+                fast=fast,
+                search_method=search_method
             )
             if probes is None or len(probes) == 0:
                 print(f"Warning: No probe for {transcript_name}")
@@ -1886,7 +1963,8 @@ class FlexProbeDesigner:
                                                 truseq: bool = True,
                                                 fast: bool = False,
                                                 barcode: int | list[int] = 0,
-                                                lhs_probes: list[str] = None) -> pd.DataFrame:
+                                                lhs_probes: list[str] = None,
+                                                search_method: str = None) -> pd.DataFrame:
         """
         Create a set of gap-filling probes for a given set of sequences.
         :param transcript_sequences: The sequences to target. If a tuple, first element is the original transcript, the second is the mutated transcript.
@@ -1901,6 +1979,7 @@ class FlexProbeDesigner:
         :param fast: If True, we will use a fast approximate search for only "optimal" probes, rather than a full search.
         :param barcode: The barcode(s) to use for the probe.
         :param lhs_probes: used to pre-define desired LHS probes.
+        :param search_method: Force a specific search method. 'brute_force' for exhaustive search, 'optimization' for dual annealing. None for automatic selection.
         :return: The dataframe result. Or if visium is True, a tuple of the flex probe dataframe and the visium probe dataframe.
         """
         all_probes = dict()
@@ -1989,7 +2068,8 @@ class FlexProbeDesigner:
                 existing_probes=all_probes,
                 flex_probes=flex_probes,
                 fast=fast,
-                predefined_lhs=lhs_probes[i] if lhs_probes else None
+                predefined_lhs=lhs_probes[i] if lhs_probes else None,
+                search_method=search_method
             )
             if probes is None or len(probes) == 0:
                 missing.append(transcript_name)

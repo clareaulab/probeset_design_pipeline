@@ -3,5 +3,8 @@
   "tx_min_gc": 0.2,
   "tx_max_gc": 0.8,
   "strict_gc_content": true,
-  "max_bridge_length": 10
+  "max_bridge_length": 10,
+  "invalid_gap_penalty": 1e8,
+  "lhs_tm_penalty": 0,
+  "rhs_tm_penalty": 0
 }

@@ -23,28 +23,28 @@ To regenerate probes for each barcode:
 
 ```bash
 # Barcode 1
-python src/app.py --mane --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 1 probe_sets/MPN_16plex/inputs_BC1.csv MPN_BC1_probes
+python src/app.py --release 109 --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 1 probe_sets/MPN_16plex/inputs_BC1.csv MPN_BC1_probes
 
 # Barcode 2
-python src/app.py --mane --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 2 probe_sets/MPN_16plex/inputs_BC2.csv MPN_BC2_probes
+python src/app.py --release 109 --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 2 probe_sets/MPN_16plex/inputs_BC2.csv MPN_BC2_probes
 
 # Barcode 3
-python src/app.py --mane --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 3 probe_sets/MPN_16plex/inputs_BC3.csv MPN_BC3_probes
+python src/app.py --release 109 --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 3 probe_sets/MPN_16plex/inputs_BC3.csv MPN_BC3_probes
 
 # Barcode 4
-python src/app.py --mane --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 4 probe_sets/MPN_16plex/inputs_BC4.csv MPN_BC4_probes
+python src/app.py --release 109 --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 4 probe_sets/MPN_16plex/inputs_BC4.csv MPN_BC4_probes
 
 # Barcode 5
-python src/app.py --mane --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 5 probe_sets/MPN_16plex/inputs_BC5.csv MPN_BC5_probes
+python src/app.py --release 109 --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 5 probe_sets/MPN_16plex/inputs_BC5.csv MPN_BC5_probes
 
 # Barcode 6
-python src/app.py --mane --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 6 probe_sets/MPN_16plex/inputs_BC6.csv MPN_BC6_probes
+python src/app.py --release 109 --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 6 probe_sets/MPN_16plex/inputs_BC6.csv MPN_BC6_probes
 
 # Barcode 7
-python src/app.py --mane --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 7 probe_sets/MPN_16plex/inputs_BC7.csv MPN_BC7_probes
+python src/app.py --release 109 --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 7 probe_sets/MPN_16plex/inputs_BC7.csv MPN_BC7_probes
 
 # Barcode 8
-python src/app.py --mane --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 8 probe_sets/MPN_16plex/inputs_BC8.csv MPN_BC8_probes
+python src/app.py --release 109 --skip_errors --config_file probe_sets/MPN_16plex/config.json --barcodes 8 probe_sets/MPN_16plex/inputs_BC8.csv MPN_BC8_probes
 ```
 
 **Note**: The original probes were generated using custom transcript FASTA sequences (via `gene2fasta.pkl`) rather than Ensembl transcripts. To reproduce exactly, provide the transcript sequences in the input file (column 2 or 3).

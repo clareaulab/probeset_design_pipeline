@@ -28,13 +28,13 @@ The `lung_probes.tsv` file contains 384 probes from multiple sources:
 ### Standard Probes (25bp)
 
 ```bash
-python src/app.py --mane --skip_errors --config_file probe_sets/lung/config.json probe_sets/lung/inputs.csv lung_probes
+python src/app.py --release 109 --skip_errors --config_file probe_sets/lung/config.json probe_sets/lung/inputs.csv test_probes
 ```
 
 ### Short Probes (23bp LHS)
 
 ```bash
-python src/app.py --mane --skip_errors --config_file probe_sets/lung/config_short.json probe_sets/lung/inputs_short.csv lung_probes_short
+python src/app.py --release 109 --skip_errors --config_file probe_sets/lung/config_short.json probe_sets/lung/inputs_short.csv lung_probes_short
 ```
 
 **Note**: The original probes were generated using custom transcript FASTA sequences rather than Ensembl transcripts. To reproduce exactly, provide the transcript sequences in the input file.

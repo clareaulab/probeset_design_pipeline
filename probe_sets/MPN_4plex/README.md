@@ -20,7 +20,7 @@ The `inputs.csv` file contains all 95 HGVSc identifiers from the reference outpu
 To regenerate probes:
 
 ```bash
-python src/app.py --mane --skip_errors --config_file probe_sets/MPN_4plex/config.json probe_sets/MPN_4plex/inputs.csv MPN_4plex_probes
+python src/app.py --release 109 --skip_errors --config_file probe_sets/MPN_4plex/config.json probe_sets/MPN_4plex/inputs.csv MPN_4plex_probes
 ```
 
 **Note**: The original probes were generated using custom transcript FASTA sequences (via `gene2fasta.pkl`) rather than Ensembl transcripts. To reproduce exactly, provide the transcript sequences in the input file (column 2 or 3).

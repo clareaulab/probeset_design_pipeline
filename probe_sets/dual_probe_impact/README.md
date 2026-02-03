@@ -22,7 +22,10 @@ This directory contains inputs and outputs for 0bp genotyping probes designed fo
 
 | File | Variants | Description |
 |------|----------|-------------|
-| `inputs.csv` | 96 | Target variants for genotyping probes |
+| `inputs.csv` | 96 | Target variants with gene symbols (may not reproduce exactly) |
+| `inputs_enst.csv` | 96 | Target variants with ENSTs (use this for reproducibility) |
+
+**Important**: Use `inputs_enst.csv` to reproduce the exact probes. The original probes were designed using specific Ensembl transcripts. Using gene symbols (`inputs.csv`) may select different transcripts depending on Ensembl release and transcript ranking heuristics.
 
 ## Configuration Files
 
@@ -36,14 +39,16 @@ This directory contains inputs and outputs for 0bp genotyping probes designed fo
 ### LHS Genotyping Probes (Barcode 1)
 
 ```bash
-python src/app.py --mane --skip_errors --barcodes 1 --config_file probe_sets/dual_probe_impact/config_lhs.json probe_sets/dual_probe_impact/inputs.csv dual_lhs_probes
+python src/app.py --skip_errors --release 109 --barcodes 1 --config_file probe_sets/dual_probe_impact/config_lhs.json probe_sets/dual_probe_impact/inputs_enst.csv dual_lhs_probes
 ```
 
 ### RHS Genotyping Probes (Barcode 2)
 
 ```bash
-python src/app.py --mane --skip_errors --barcodes 2 --config_file probe_sets/dual_probe_impact/config_rhs.json probe_sets/dual_probe_impact/inputs.csv dual_rhs_probes
+python src/app.py --skip_errors --release 109 --barcodes 2 --config_file probe_sets/dual_probe_impact/config_rhs.json probe_sets/dual_probe_impact/inputs_enst.csv dual_rhs_probes
 ```
+
+**Note**: Use `inputs_enst.csv` (not `inputs.csv`) for reproducibility. The `--mane` flag is not needed when using explicit ENSTs.
 
 ### Command Options
 

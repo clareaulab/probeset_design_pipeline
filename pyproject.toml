@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "biopython>=1.86",
     "gtfparse @ git+https://github.com/openvax/gtfparse",
+    "niquests>=3.17.0",
     "numpy>=1.26.4",
     "pandas>=2.3.3",
     "pyarrow>=23.0.0",

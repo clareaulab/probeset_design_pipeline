@@ -26,7 +26,8 @@ def main(
         skip_errors: bool = False,
         msk: bool = False,
         mane: bool = False,
-        ensembl_release: int = 111
+        ensembl_release: int = 111,
+        search_method: Literal["brute_force", "optimization"] = None
 ):
     if not targets.exists() or not targets.is_file():
         print(f"Error: Targets file '{targets}' does not exist or is not a file.", file=sys.stderr)
@@ -106,6 +107,7 @@ def main(
 
     # Run the main pipeline
     transcripts = dict()
+    transcript_ids = dict()  # Map hgvsc -> transcript_id
     target_starts = []
     target_ends = []
     skipped = []
@@ -128,6 +130,15 @@ def main(
             original_sequence, mutated_sequence, mutated_snv_start, mutated_snv_end = snv_probe_helper.get_gene_sequence(
                 gene, snv_start, snv_end, snv_action, snv_data, sequence
             )
+
+            # Get the transcript ID that was used
+            used_transcript_id = snv_probe_helper.last_transcript_id
+
+            # If input was an ENST, replace with gene name in the output name for readability
+            if gene.startswith("ENST"):
+                transcript = snv_probe_helper.genome.transcript_by_id(gene.split(".")[0])
+                gene_name = transcript.gene_name
+                hgvsc = hgvsc.replace(gene, gene_name, 1)
         except Exception as e:
             if skip_errors:
                 print(f"Warning: Skipping '{hgvsc}': {e}", file=sys.stderr)
@@ -137,6 +148,7 @@ def main(
                 raise
 
         transcripts[hgvsc] = (original_sequence, mutated_sequence)
+        transcript_ids[hgvsc] = used_transcript_id
         target_starts.append((snv_start, mutated_snv_start))
         target_ends.append((snv_end, mutated_snv_end))
 
@@ -153,7 +165,15 @@ def main(
         expect_hits=[],
         n_probes=1,
         visium='visium' in technology,
-        barcode=barcodes
+        barcode=barcodes,
+        search_method=search_method
+    )
+
+    # Add transcript_id column by mapping from name
+    # Match by exact name, name without suffix, or name prefix
+    probe_df['transcript_id'] = probe_df['name'].apply(
+        lambda n: transcript_ids.get(n) or transcript_ids.get(n.rsplit('_', 1)[0]) or
+                  next((tid for hgvsc, tid in transcript_ids.items() if n.startswith(hgvsc)), None)
     )
 
     if output_format == "csv":
@@ -229,6 +249,19 @@ if __name__ == "__main__":
         help="Ensembl release version to use (default: 111)."
     )
 
+    search_method_group = parser.add_mutually_exclusive_group()
+    search_method_group.add_argument(
+        "--brute-force",
+        action="store_true",
+        dest="brute_force",
+        help="Force brute force (exhaustive) search for probe optimization."
+    )
+    search_method_group.add_argument(
+        "--optimize",
+        action="store_true",
+        help="Force dual annealing optimization search for probe optimization."
+    )
+
     parser.add_argument(
         "targets",
         type=Path,
@@ -246,4 +279,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    main(args.config_file, args.organism, args.technology, args.barcodes, args.output_format, args.targets, args.name, args.skip_errors, args.msk, args.mane, args.release)
+    # Determine search method from mutually exclusive flags
+    if args.brute_force:
+        search_method = "brute_force"
+    elif args.optimize:
+        search_method = "optimization"
+    else:
+        search_method = None
+
+    main(args.config_file, args.organism, args.technology, args.barcodes, args.output_format, args.targets, args.name, args.skip_errors, args.msk, args.mane, args.release, search_method)
