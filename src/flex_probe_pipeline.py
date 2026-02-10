@@ -756,6 +756,13 @@ class FlexProbeDesigner:
                     raise ValueError("Invalid reference probe set.")
             self.reference_probes = func()
 
+        # Ensure probe_seq column exists, reconstructing from lhs/rhs if needed
+        if 'probe_seq' not in self.reference_probes.columns:
+            if 'lhs_probe' in self.reference_probes.columns and 'rhs_probe' in self.reference_probes.columns:
+                self.reference_probes['probe_seq'] = self.reference_probes['lhs_probe'] + self.reference_probes['rhs_probe']
+            else:
+                raise ValueError("Reference probe set must contain either 'probe_seq' or both 'lhs_probe' and 'rhs_probe' columns.")
+
         #print("Building the BLAST database...")
         #self.build_blast_db()
 
@@ -1083,26 +1090,49 @@ class FlexProbeDesigner:
                     new_end = start_idx + len(lhs_probe) + len(rhs_probe) + new_original_gap_length
                     # Calculate overlap amount
                     if not ((new_end < existing_start) or (new_start > existing_end)):
-                        overlap_amount = min(new_end, existing_end) - max(new_start, existing_start)
-                        if self.config.max_probe_overlap >= 0 and overlap_amount > self.config.max_probe_overlap:
-                            carryover_visits[carryover_key] = self.config.invalid_score
-                            return self.config.invalid_score
+                        carryover_visits[carryover_key] = self.config.invalid_score
+                        return self.config.invalid_score
 
-        # Skip if manually excluded
-        if (reverse_complement(lhs_probe),reverse_complement(rhs_probe)) in self.config.exclude_probes:
+        if reverse_complement(lhs_probe) == "TTGTCTCTGGTCCTTACTTCCCCAT" and reverse_complement(rhs_probe) == "TCTAGGGCCTCTTGTGCCTTTAAAA":
+            pass  # Orig
+
+        if reverse_complement(lhs_probe) == "TTTGTCTCTGGTCCTTACTTCCCCA" and reverse_complement(rhs_probe) == "TCTAGGGCCTCTTGTGCCTTTAAAA":
+            pass  # New
+
+        # Skip if manually excluded (exact match)
+        if [reverse_complement(lhs_probe),reverse_complement(rhs_probe)] in self.config.exclude_probes:
             carryover_visits[carryover_key] = self.config.invalid_score
             return self.config.invalid_score
 
         flex_overlap = 0
+        new_start = start_idx
+        new_original_gap_length = len(original_gap_sequence) if is_gapfill else 0
+        new_end = start_idx + len(lhs_probe) + len(rhs_probe) + new_original_gap_length
+
+        # Check for overlap with excluded probes (positional, not just exact match)
+        for excluded_lhs_gene, excluded_rhs_gene in self.config.exclude_probes:
+            excluded_rhs_pos = original_transcript_sequence.find(excluded_rhs_gene)
+            if excluded_rhs_pos == -1:
+                continue
+            excluded_lhs_end = original_transcript_sequence.find(excluded_lhs_gene)
+            if excluded_lhs_end == -1:
+                continue
+            existing_start = excluded_rhs_pos
+            existing_end = excluded_lhs_end + len(excluded_lhs_gene)
+            if not ((new_end <= existing_start) or (new_start >= existing_end)):
+                if (new_start < existing_end) & (new_end >= existing_end):
+                    flex_overlap += (existing_end - new_start)
+                elif (existing_start < new_end) & (existing_end >= new_end):
+                    flex_overlap += (new_end - existing_start)
+                else:
+                    raise ValueError("Unexpected overlap condition.")
+
         # Check for overlap with flex probes
         for i, probe in flex_probes.items():
             if probe.original_transcript_sequence == original_transcript_sequence:
                 existing_start = probe.rhs_gene_start
                 existing_original_gap_length = 0
                 existing_end = probe.rhs_gene_start + len(probe.lhs_gene_sequence) + len(probe.rhs_gene_sequence) + existing_original_gap_length
-                new_start = start_idx
-                new_original_gap_length = len(original_gap_sequence) if is_gapfill else 0
-                new_end = start_idx + len(lhs_probe) + len(rhs_probe) + new_original_gap_length
                 if not ((new_end <= existing_start) or (new_start >= existing_end)):
                     if (new_start < existing_end) & (new_end >= existing_end):
                         flex_overlap += (existing_end - new_start)
@@ -1110,6 +1140,21 @@ class FlexProbeDesigner:
                         flex_overlap += (new_end - existing_start)
                     else:
                         raise ValueError("Unexpected overlap condition.")
+
+        # Check for overlap with existing probes
+        for name in existing_probes.keys():
+            for probe in existing_probes[name]:
+                if probe.original_transcript_sequence == original_transcript_sequence:
+                    existing_start = probe.rhs_gene_start
+                    existing_original_gap_length = probe.original_target_end_gap - probe.original_target_start_gap if probe.is_gapfill else 0
+                    existing_end = probe.rhs_gene_start + len(probe.lhs_gene_sequence) + len(probe.rhs_gene_sequence) + existing_original_gap_length
+                    if not ((new_end <= existing_start) or (new_start >= existing_end)):
+                        if (new_start < existing_end) & (new_end >= existing_end):
+                            flex_overlap += (existing_end - new_start)
+                        elif (existing_start < new_end) & (existing_end >= new_end):
+                            flex_overlap += (new_end - existing_start)
+                        else:
+                            raise ValueError("Unexpected overlap condition.")
 
         if self.config.flex_0bp_genotyping and is_gapfill:
             score_mutated = self.score_probe(*args, flex_overlap=flex_overlap)
@@ -1993,17 +2038,18 @@ class FlexProbeDesigner:
         flex_probes = dict()
         flex_list = self.reference_probes
         checked_sequences = []
-        i = 0
+        probe_idx = 0
         for (name, sequence) in transcript_sequences.items():
-            sequence = sequence[0]
+            if isinstance(sequence, tuple):
+                sequence = sequence[0]  # Use original sequence for overlap checking
             name = name.split(' ')[0]
             if sequence not in checked_sequences:
                 checked_sequences.append(sequence)
                 for probe_seq in flex_list['probe_seq']:
                     probe_gene_seq = reverse_complement(probe_seq)
                     if probe_gene_seq in sequence:
-                        i += 1
-                        flex_probes[i] = Probe(
+                        probe_idx += 1
+                        flex_probes[probe_idx] = Probe(
                             transcript_name=name,
                             rhs_probe = probe_seq[25:],
                             lhs_probe = probe_seq[:25],
@@ -2029,6 +2075,7 @@ class FlexProbeDesigner:
                             original_target_start_gap = None,
                             original_target_end_gap = None,
                         )
+
         for i, (transcript_name, transcript_sequence) in tqdm(enumerate(transcript_sequences.items()),
                                                               desc='Generating probes',
                                                               total=len(transcript_sequences),

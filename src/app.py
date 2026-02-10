@@ -71,12 +71,26 @@ def main(
             else:
                 raise ValueError(f"Unsupported organism for VisiumHD: {organism}")
 
+    # Use cached flex_probes.csv next to config if available, otherwise download
+    flex_probes_cache = config_file.parent / "flex_probes.csv" if config_file else None
+    if flex_probes_cache and flex_probes_cache.exists():
+        print(f"Loading reference probes from '{flex_probes_cache}'...")
+        reference_probes = pd.read_csv(flex_probes_cache, comment='#')
+    else:
+        reference_probes = probeset
+
     # noinspection PyTypeChecker
     designer = FlexProbeDesigner(
         working_dir="./",
-        reference_probe_set=probeset,
+        reference_probe_set=reference_probes,
         config=config
     )
+
+    # Cache the reference probes next to the config file if not already cached
+    if flex_probes_cache and not flex_probes_cache.exists():
+        flex_probes_cache.parent.mkdir(parents=True, exist_ok=True)
+        designer.reference_probes.to_csv(flex_probes_cache, index=False)
+        print(f"Saved reference probes to '{flex_probes_cache}'.")
 
     if organism == "human":
         if msk:
