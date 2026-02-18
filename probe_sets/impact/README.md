@@ -16,7 +16,7 @@ This probe set contains 163 probes from multiple sources for detecting cancer-as
 ### 1. MSK IMPACT SNVs
 
 ```bash
-python src/app.py --release 109 --skip_errors --config_file probe_sets/impact/config.json probe_sets/impact/inputs_impact.csv impact_probes
+python src/app.py --release 109 --skip_errors --config_file probe_sets/impact/config.json probe_sets/impact/inputs.csv impact_probes
 ```
 
 **Note:** Uses `--msk` flag for MSK IMPACT canonical transcript overrides.
