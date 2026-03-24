@@ -27,7 +27,8 @@ def main(
         msk: bool = False,
         mane: bool = False,
         ensembl_release: int = 111,
-        search_method: Literal["brute_force", "optimization"] = None
+        search_method: Literal["brute_force", "optimization"] = None,
+        fast: bool = False
 ):
     if not targets.exists() or not targets.is_file():
         print(f"Error: Targets file '{targets}' does not exist or is not a file.", file=sys.stderr)
@@ -83,7 +84,8 @@ def main(
     designer = FlexProbeDesigner(
         working_dir="./",
         reference_probe_set=reference_probes,
-        config=config
+        config=config,
+        fast=fast
     )
 
     # Cache the reference probes next to the config file if not already cached
@@ -176,7 +178,7 @@ def main(
         transcripts,
         target_starts,
         target_ends,
-        expect_hits=[],
+        expect_hits=None,
         n_probes=1,
         visium='visium' in technology,
         barcode=barcodes,
@@ -263,6 +265,12 @@ if __name__ == "__main__":
         help="Ensembl release version to use (default: 111)."
     )
 
+    parser.add_argument(
+        "--blast",
+        action="store_true",
+        help="Enable BLAST-based off-target filtering (slower but more accurate; requires BLAST+ in PATH)."
+    )
+
     search_method_group = parser.add_mutually_exclusive_group()
     search_method_group.add_argument(
         "--brute-force",
@@ -301,4 +309,4 @@ if __name__ == "__main__":
     else:
         search_method = None
 
-    main(args.config_file, args.organism, args.technology, args.barcodes, args.output_format, args.targets, args.name, args.skip_errors, args.msk, args.mane, args.release, search_method)
+    main(args.config_file, args.organism, args.technology, args.barcodes, args.output_format, args.targets, args.name, args.skip_errors, args.msk, args.mane, args.release, search_method, fast=not args.blast)
