@@ -5,9 +5,9 @@ This repository contains the pipeline for designing custom gap-filling probes co
 ## Requirements
 
 - Python 3.12+
-- NCBI BLAST+ command-line tools (`makeblastdb`, `blastn`) must be installed and available in PATH
+- NCBI BLAST+ command-line tools (`makeblastdb`, `blastn`) — only required when using `--blast` for off-target filtering
 
-Note: The repo also supports installing dependencies with [pixi](https://pixi.prefix.dev/latest/) which will automatically 
+Note: The repo also supports installing dependencies with [pixi](https://pixi.prefix.dev/latest/) which will automatically
 install python and blast into a virtual environment.
 
 ## Installation
@@ -17,12 +17,12 @@ install python and blast into a virtual environment.
 git clone <repository-url>
 cd probeset_design_pipeline
 
-# Install dependencies using uv or pip, assumes blast is already installed
+# Install dependencies using uv or pip
 uv sync
 # or
 pip install -e .
 
-# Install dependencies with pixi (includes python and blast)
+# Install dependencies with pixi (includes python and blast for --blast support)
 pixi install
 ```
 
@@ -54,6 +54,7 @@ python src/app.py [OPTIONS] <targets> <output_name>
 | `--mane` | false | Use MANE Select canonical transcripts (recommended for reproducibility) |
 | `--msk` | false | Use MSK IMPACT canonical transcript overrides |
 | `--release` | 111 | Ensembl release version to use |
+| `--blast` | false | Enable BLAST-based off-target filtering (requires BLAST+ in PATH) |
 
 ### Example
 

@@ -725,10 +725,12 @@ class FlexProbeDesigner:
                  working_dir: str,
                  reference_probe_set: Literal['human_flex_v1', 'human_flex_v2', 'human_visiumhd',
                     'mouse_flex_v1', 'mouse_flex_v2', "mouse_visiumhd"] | pd.DataFrame,
-                 config: FlexProbeConfig):
+                 config: FlexProbeConfig,
+                 fast: bool = False):
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(parents=True, exist_ok=True)
         self.config = config
+        self.fast = fast
         self.blast_db = self.working_dir / "blast_db" / "background"
 
         # We will cache the blast hits to avoid redundant calls
@@ -763,8 +765,9 @@ class FlexProbeDesigner:
             else:
                 raise ValueError("Reference probe set must contain either 'probe_seq' or both 'lhs_probe' and 'rhs_probe' columns.")
 
-        #print("Building the BLAST database...")
-        #self.build_blast_db()
+        if not self.fast:
+            print("Building the BLAST database...")
+            self.build_blast_db()
 
     def build_blast_db(self):
         """
@@ -774,12 +777,15 @@ class FlexProbeDesigner:
             shutil.rmtree(self.blast_db.parent)
         self.blast_db.parent.mkdir(parents=True, exist_ok=True)
 
-        with tempfile.NamedTemporaryFile(mode="w+", delete=True) as f:
-            for name, sequence in self.config.background.items():
-                f.write(f">{name}\n{sequence}\n")
-            f.seek(0)
-
-            subprocess.run(["makeblastdb", "-in", f.name, "-dbtype", "nucl", "-out", str(self.blast_db)], stdout=subprocess.DEVNULL)
+        temp_fasta = self.working_dir / "temp_background.fasta"
+        try:
+            with open(temp_fasta, "w") as f:
+                for name, sequence in self.config.background.items():
+                    f.write(f">{name}\n{sequence}\n")
+            subprocess.run(["makeblastdb", "-in", str(temp_fasta), "-dbtype", "nucl", "-out", str(self.blast_db)], stdout=subprocess.DEVNULL)
+        finally:
+            if temp_fasta.exists():
+                temp_fasta.unlink()
 
     def append_to_background(self, seqs: dict[str, str]):
         """
@@ -802,7 +808,7 @@ class FlexProbeDesigner:
         :param sequence: The sequence to blast.
         :return: The number of hits and the names of the hits.
         """
-        if len(sequence) == 0:
+        if self.fast or len(sequence) == 0:
             return 0, list()
 
         blast_out = blast_search(
@@ -1612,6 +1618,10 @@ class FlexProbeDesigner:
         :param expect_hits: The expected number of hits to the transcriptome.
         :return: The indices of probes to remove, and the list of all LHS and RHS hits as well as a list of the gene names.
         """
+        if self.fast:
+            n = len(lhs_seqs)
+            return [], [(0, 0)] * n, [([], [])] * n
+
         to_remove = []
         all_hits = []
         all_names = []
@@ -2150,9 +2160,13 @@ class FlexProbeDesigner:
         return self.convert_probe_set_to_df(all_probes, truseq=truseq, barcode=barcode)
 
     def generate_expect_hits(self, sequences: list[str]) -> list[int]:
+        if self.fast:
+            return [1] * len(sequences)
         print("Searching for baseline hits to the transcriptome.")
         expect_hits = []
         for transcript_sequence in tqdm(sequences, desc='Baseline hits', unit='target', dynamic_ncols=True):
+            if isinstance(transcript_sequence, tuple):
+                transcript_sequence = transcript_sequence[0]
             n_hits, _ = self.blast_hits(transcript_sequence)
             expect_hits.append(n_hits)
         return expect_hits
