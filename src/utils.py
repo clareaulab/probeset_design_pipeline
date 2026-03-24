@@ -86,7 +86,7 @@ def fetch_human_flex_v1_probeset(filename: str = "./human_v1_probes.csv") -> pd.
     """
     Fetch the Flex v1 probe set from 10X Genomics.
     """
-    url = "https://cf.10xgenomics.com/supp/cell-exp/probeset/Chromium_Human_Transcriptome_Probe_Set_v1.1.0_GRCh38-2024-A.csv"
+    url = "https://cf.10xgenomics.com/supp/cell-exp/probeset/Chromium_Human_Transcriptome_Probe_Set_v1.0.1_GRCh38-2020-A.csv"
     return fetch_csv_from_url(filename, url)
 
 

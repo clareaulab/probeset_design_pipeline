@@ -572,7 +572,7 @@ class SnvProbeHelper:
             split = dna_snv_string.split("delins")
             dna_range = split[0].split("_")
             if len(dna_range) == 1:
-                start = int(dna_range[0][:-1])
+                start = int(dna_range[0])
                 end = start
             else:
                 start = int(dna_range[0])
@@ -1093,13 +1093,7 @@ class FlexProbeDesigner:
                         carryover_visits[carryover_key] = self.config.invalid_score
                         return self.config.invalid_score
 
-        if reverse_complement(lhs_probe) == "TTGTCTCTGGTCCTTACTTCCCCAT" and reverse_complement(rhs_probe) == "TCTAGGGCCTCTTGTGCCTTTAAAA":
-            pass  # Orig
-
-        if reverse_complement(lhs_probe) == "TTTGTCTCTGGTCCTTACTTCCCCA" and reverse_complement(rhs_probe) == "TCTAGGGCCTCTTGTGCCTTTAAAA":
-            pass  # New
-
-        # Skip if manually excluded (exact match)
+        # Skip if manually excluded
         if [reverse_complement(lhs_probe),reverse_complement(rhs_probe)] in self.config.exclude_probes:
             carryover_visits[carryover_key] = self.config.invalid_score
             return self.config.invalid_score
