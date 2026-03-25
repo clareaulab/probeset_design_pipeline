@@ -557,6 +557,8 @@ class SnvProbeHelper:
             snv_length_change = 0
             return start, end, action, data, snv_length_change
 
+        if dna_snv_string.startswith("m."):
+            dna_snv_string = dna_snv_string.replace("m.", "c.")
         assert dna_snv_string.startswith("c."), "Invalid DNA SNV string."
         dna_snv_string = dna_snv_string[2:]
         # Classify the action first to determine how to parse the data
