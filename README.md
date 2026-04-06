@@ -122,7 +122,7 @@ Configuration files control probe design parameters. See `probe_sets/GBM/config.
 | `tx_max_gc` | 0.8 | Maximum GC content for probes |
 | `strict_gc_content` | true | Reject probes outside GC bounds (vs. penalize) |
 | `add_probes_to_blast` | true | Add accepted probes to BLAST database for off-target checking |
-| `max_probe_overlap` | 5 | Maximum allowed overlap between probes in bp |
+| `max_probe_overlap` | 0 | Max overlap (bp) allowed between designed probes. `0` disallows any overlap. `-1` disables the check entirely (probes may overlap freely). |
 | `exclude_probes` | [] | List of [lhs, rhs] sequence pairs to exclude |
 
 ### Scoring Penalties

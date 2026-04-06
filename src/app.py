@@ -15,6 +15,106 @@ from flex_probe_pipeline import HumanBackgroundFlexProbeConfig, MouseBackgroundF
 np.random.seed(42)
 
 
+def collapse_nearby_targets(
+        transcripts: dict,
+        transcript_ids: dict,
+        target_positions: dict,
+        collapse_window: int,
+) -> tuple[dict, dict, list, list]:
+    """
+    Merge targets that share the same original transcript sequence and whose HGVSc SNV positions
+    span <= collapse_window bp into a single probe entry covering the combined region.
+
+    The combined probe is designed on the wildtype (original) sequence so its gap spans all
+    variant sites, allowing a single probe pair to detect any variant in the group.
+    0bp (wildtype) entries are never collapsed with SNV entries.
+
+    target_positions: dict mapping hgvsc key -> (orig_start, orig_end, mut_start, mut_end)
+    """
+    from collections import defaultdict
+
+    entries = []
+    for key in transcripts.keys():
+        orig_seq, mut_seq = transcripts[key]
+        orig_start, orig_end, mut_start, mut_end = target_positions[key]
+        is_zerobp = orig_start is None
+        entries.append({
+            'key': key,
+            'orig_seq': orig_seq,
+            'mut_seq': mut_seq,
+            'orig_start': orig_start,
+            'orig_end': orig_end,
+            'mut_start': mut_start,
+            'mut_end': mut_end,
+            'tid': transcript_ids.get(key),
+            'is_zerobp': is_zerobp,
+        })
+
+    # Group by original sequence; 0bp entries form their own singleton groups
+    groups_by_seq = defaultdict(list)
+    zerobp_entries = []
+    for e in entries:
+        if e['is_zerobp']:
+            zerobp_entries.append(e)
+        else:
+            groups_by_seq[e['orig_seq']].append(e)
+
+    new_transcripts = {}
+    new_transcript_ids = {}
+    new_target_starts = []
+    new_target_ends = []
+
+    def _emit(e):
+        new_transcripts[e['key']] = (e['orig_seq'], e['mut_seq'])
+        new_transcript_ids[e['key']] = e['tid']
+        new_target_starts.append((e['orig_start'], e['mut_start']))
+        new_target_ends.append((e['orig_end'], e['mut_end']))
+
+    # Process SNV groups
+    for orig_seq, group in groups_by_seq.items():
+        group.sort(key=lambda e: e['orig_start'])
+
+        # Greedy merge: extend the current cluster while its span stays within collapse_window
+        clusters = []
+        current = [group[0]]
+        for e in group[1:]:
+            cur_min = min(x['orig_start'] for x in current)
+            cur_max = max(x['orig_end'] for x in current)
+            new_min = min(cur_min, e['orig_start'])
+            new_max = max(cur_max, e['orig_end'])
+            if new_max - new_min <= collapse_window:
+                current.append(e)
+            else:
+                clusters.append(current)
+                current = [e]
+        clusters.append(current)
+
+        for cluster in clusters:
+            if len(cluster) == 1:
+                _emit(cluster[0])
+            else:
+                gene_prefix = cluster[0]['key'].split(' ')[0]
+                variants_part = '+'.join(
+                    e['key'].split(' ', 1)[1] if ' ' in e['key'] else e['key']
+                    for e in cluster
+                )
+                combined_key = f"{gene_prefix} {variants_part}"
+                combined_start = min(e['orig_start'] for e in cluster)
+                combined_end = max(e['orig_end'] for e in cluster)
+                print(f"Collapsing {len(cluster)} targets into '{combined_key}' "
+                      f"(HGVSc positions {combined_start}-{combined_end})")
+                new_transcripts[combined_key] = (orig_seq, orig_seq)
+                new_transcript_ids[combined_key] = cluster[0]['tid']
+                new_target_starts.append((combined_start, combined_start))
+                new_target_ends.append((combined_end, combined_end))
+
+    # Re-append 0bp entries in original order
+    for e in zerobp_entries:
+        _emit(e)
+
+    return new_transcripts, new_transcript_ids, new_target_starts, new_target_ends
+
+
 def main(
         config_file: Path,
         organism: Literal["human", "mouse"],
@@ -28,7 +128,8 @@ def main(
         mane: bool = False,
         ensembl_release: int = 111,
         search_method: Literal["brute_force", "optimization"] = None,
-        fast: bool = False
+        fast: bool = False,
+        collapse_window: Optional[int] = None,
 ):
     if not targets.exists() or not targets.is_file():
         print(f"Error: Targets file '{targets}' does not exist or is not a file.", file=sys.stderr)
@@ -124,9 +225,11 @@ def main(
     # Run the main pipeline
     transcripts = dict()
     transcript_ids = dict()  # Map hgvsc -> transcript_id
+    target_positions = dict()  # Map hgvsc -> (orig_start, orig_end, mut_start, mut_end)
     target_starts = []
     target_ends = []
     skipped = []
+    first = True
     for index, row in targets.iterrows():
         gene = row['Gene']
         hgvsc = row['HGVSc']
@@ -139,10 +242,8 @@ def main(
         if is_zerobp:
             hgvsc = f"{gene} 0bp"
 
-        print(hgvsc)
-
         try:
-            snv_start, snv_end, snv_action, snv_data, mutated_snv_length = snv_probe_helper.parse_snv_info(hgvsc.split(" ")[1])
+            snv_start, snv_end, snv_action, snv_data, mutated_snv_length = snv_probe_helper.parse_snv_info(hgvsc.split(" ")[-1])
             original_sequence, mutated_sequence, mutated_snv_start, mutated_snv_end = snv_probe_helper.get_gene_sequence(
                 gene, snv_start, snv_end, snv_action, snv_data, sequence
             )
@@ -156,6 +257,9 @@ def main(
                 gene_name = transcript.gene_name
                 hgvsc = hgvsc.replace(gene, gene_name, 1)
         except Exception as e:
+            if first:
+                first = False  # If there is a header, silently skip
+                continue
             if skip_errors:
                 print(f"Warning: Skipping '{hgvsc}': {e}", file=sys.stderr)
                 skipped.append((hgvsc, str(e)))
@@ -163,16 +267,25 @@ def main(
             else:
                 raise
 
+        print("Parsed", hgvsc)
+
         transcripts[hgvsc] = (original_sequence, mutated_sequence)
         transcript_ids[hgvsc] = used_transcript_id
         target_starts.append((snv_start, mutated_snv_start))
         target_ends.append((snv_end, mutated_snv_end))
+        target_positions[hgvsc] = (snv_start, snv_end, mutated_snv_start, mutated_snv_end)
+        first = False
 
     if skipped:
         print(f"\nSkipped {len(skipped)} targets due to errors:", file=sys.stderr)
         for target, reason in skipped:
             print(f"  {target}: {reason}", file=sys.stderr)
         print(file=sys.stderr)
+
+    if collapse_window is not None:
+        transcripts, transcript_ids, target_starts, target_ends = collapse_nearby_targets(
+            transcripts, transcript_ids, target_positions, collapse_window
+        )
 
     probe_df = designer.generate_gapfilling_flex_probe_set_df(
         transcripts,
@@ -285,6 +398,18 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "--collapse_window",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Merge targets on the same transcript whose SNV positions span <= N bp into a single "
+             "probe. The combined probe is designed on the wildtype sequence with its gap spanning "
+             "all variant sites, so one probe pair detects any variant in the group. "
+             "Disabled by default. A value around your max_bridge_length (default 10) is a "
+             "reasonable starting point."
+    )
+
+    parser.add_argument(
         "targets",
         type=Path,
         help="Path to a csv file containing a list of genes, one per line (no header)."
@@ -309,4 +434,4 @@ if __name__ == "__main__":
     else:
         search_method = None
 
-    main(args.config_file, args.organism, args.technology, args.barcodes, args.output_format, args.targets, args.name, args.skip_errors, args.msk, args.mane, args.release, search_method, fast=not args.blast)
+    main(args.config_file, args.organism, args.technology, args.barcodes, args.output_format, args.targets, args.name, args.skip_errors, args.msk, args.mane, args.release, search_method, fast=not args.blast, collapse_window=args.collapse_window)

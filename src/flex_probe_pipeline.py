@@ -2,6 +2,7 @@ import dataclasses
 import functools
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
@@ -93,7 +94,7 @@ class FlexProbeConfig:
     offtarget_penalty_base: float = 150.  # Penalize probes with off-target hits by exponentiating this value
     offtarget_must_be_same_gene: bool = True  # If true, only penalize off target hits based on the hits that appear on both the LHS and RHS
     existing_probe_penalty: float = 100.  # Penalty per overlapping position with an existing probe
-    max_probe_overlap: int = -1  # Maximum allowed overlap (in bp) between designed probes. Set to 0 to disallow any overlap. Set to -1 to ignore overlap.
+    max_probe_overlap: int = 0  # Maximum allowed overlap (in bp) between designed probes. Set to 0 to disallow any overlap. Set to -1 to ignore overlap.
     require_transcriptome_hit: bool = False  # If True, require probes to have a hit back to the transcriptome
     flex_overlap_penalty: float = 1e7  # Penalty for overlapping with a 10x flex probe
     tandem_repeat_penalty: float = 1e5 # Penalty for probe have >= 4 repeats of a sequence of at least 3bp
@@ -738,6 +739,8 @@ class FlexProbeDesigner:
         # We will cache the blast hits to avoid redundant calls
         self.blast_hits = functools.lru_cache(maxsize=None)(self.blast_hits)
         # We will also cache scores to avoid redundant calculations
+        # Save uncached ref first so explain_score can bypass the cache (lists aren't hashable)
+        self._score_probe_uncached = self.score_probe
         self.score_probe = functools.lru_cache(maxsize=None)(self.score_probe)
 
         if isinstance(reference_probe_set, pd.DataFrame):
@@ -844,7 +847,8 @@ class FlexProbeDesigner:
                     original_gap_gene_sequence: Optional[str] = None,
                     gap_target_start_position: Optional[int] = None,
                     gap_target_end_position: Optional[int] = None,
-                    flex_overlap: Optional[int] = 0) -> float:
+                    flex_overlap: Optional[int] = 0,
+                    _reason: Optional[list] = None) -> float:
         """
         The scoring function for a probe based on heuristic rules. The lower the score, the better the probe.
         :param expect_hits: The number of base transcriptome hits to expect.
@@ -867,6 +871,7 @@ class FlexProbeDesigner:
         if is_gapfill:
             target_gap_probe_sequence = reverse_complement(target_gap_gene_sequence)
             if len(target_gap_probe_sequence) < self.config.min_bridge_length or len(target_gap_probe_sequence) > self.config.max_bridge_length:
+                if _reason is not None: _reason.append(f"Gap length {len(target_gap_probe_sequence)} outside allowed range [{self.config.min_bridge_length}, {self.config.max_bridge_length}]")
                 return self.config.invalid_score
 
         score = 0.0
@@ -878,6 +883,7 @@ class FlexProbeDesigner:
 
         # Next, we should make sure the probes are unique to each other
         if lhs_probe_sequence == rhs_probe_sequence:
+            if _reason is not None: _reason.append("LHS and RHS probe sequences are identical")
             return self.config.invalid_score
 
         # Note, the gap filling chemistry requires that the last base of the filled gap is T
@@ -901,6 +907,7 @@ class FlexProbeDesigner:
             elif is_gapfill and len(target_gap_probe_sequence) > 1:
                 score += self.config.invalid_gap_penalty
             else:
+                if _reason is not None: _reason.append(f"Junction '{junction}' is invalid for a non-gapfill or 1bp gap probe")
                 return self.config.invalid_score
 
         # Penalize targetting annotated low complexity regions
@@ -936,8 +943,10 @@ class FlexProbeDesigner:
         # First check if the GC content is within the recommended bounds
         if self.config.strict_gc_content:  # We only allow probes with GC content between tx_min_gc and tx_max_gc
             if lhs_gc < self.config.tx_min_gc or lhs_gc > self.config.tx_max_gc:
+                if _reason is not None: _reason.append(f"LHS GC content {lhs_gc:.0%} outside allowed range [{self.config.tx_min_gc:.0%}, {self.config.tx_max_gc:.0%}]")
                 return self.config.invalid_score
             if rhs_gc < self.config.tx_min_gc or rhs_gc > self.config.tx_max_gc:
+                if _reason is not None: _reason.append(f"RHS GC content {rhs_gc:.0%} outside allowed range [{self.config.tx_min_gc:.0%}, {self.config.tx_max_gc:.0%}]")
                 return self.config.invalid_score
         elif self.config.penalize_gc_content:
             # Penalize GC content outside the bounds
@@ -996,7 +1005,8 @@ class FlexProbeDesigner:
                          flex_probes: dict[str, list[Probe]],
                          original_target_start: int,
                          original_target_end: int,
-                         predefined_lhs: list[str]
+                         predefined_lhs: list[str],
+                         _reason: Optional[list] = None
                          ) -> float:
         """Wrapper for dual annealing to test flex probes."""
         start_idx = int(args[0])
@@ -1016,6 +1026,7 @@ class FlexProbeDesigner:
             shift = int(args[1])
         carryover_key = (start_idx, lhs_probe_length_adjustment, rhs_probe_length_adjustment, gap_length)
         score = 0.0
+        _score_fn = self._score_probe_uncached if _reason is not None else self.score_probe
 
         lhs_length = self.config.lhs_probe_length + lhs_probe_length_adjustment
         rhs_length = self.config.rhs_probe_length + rhs_probe_length_adjustment
@@ -1037,17 +1048,21 @@ class FlexProbeDesigner:
 
             # Check for any inconsistencies with the gap fill
             if len(gap_sequence) != gap_length:
+                if _reason is not None: _reason.append("Probe extends beyond transcript boundary (gap truncated)")
                 carryover_visits[carryover_key] = self.config.invalid_score
                 return self.config.invalid_score
             if len(gap_sequence) < self.config.min_bridge_length or len(gap_sequence) > self.config.max_bridge_length:
+                if _reason is not None: _reason.append(f"Gap length {len(gap_sequence)} outside bridge bounds [{self.config.min_bridge_length}, {self.config.max_bridge_length}]")
                 carryover_visits[carryover_key] = self.config.invalid_score
                 return self.config.invalid_score
             if target_length > 0:
                 if gap_target_start_position < 0 or gap_target_start_position >= len(gap_sequence) or gap_target_end_position < 0 or gap_target_end_position > len(gap_sequence):
+                    if _reason is not None: _reason.append("Target variant does not fall within the gap sequence")
                     carryover_visits[carryover_key] = self.config.invalid_score
                     return self.config.invalid_score
             else: ## in this case gap_target_start_position == gap_target_end_position
                 if gap_target_start_position < 0 or gap_target_start_position > len(gap_sequence):
+                    if _reason is not None: _reason.append("Target insertion point does not fall within the gap sequence")
                     return self.config.invalid_score
             args = (expect_hits, lhs_probe, rhs_probe, gap_sequence, original_gap_sequence, gap_target_start_position, gap_target_end_position)
         else:
@@ -1061,19 +1076,23 @@ class FlexProbeDesigner:
             rhs_probe = original_transcript_sequence[start_idx + shift:start_idx+rhs_length+shift]
             lhs_probe = original_transcript_sequence[start_idx+rhs_length + shift:start_idx+lhs_length+rhs_length+shift]
             if original_transcript_sequence == transcript_sequence:
+                if _reason is not None: _reason.append("WT and mutant sequences are identical at this position (no discrimination possible)")
                 return self.config.invalid_score ### don't make dual probes for a region
 
         # Filter by predefined lhs if available
         if predefined_lhs is not None:
             if reverse_complement(lhs_probe) != predefined_lhs:
+                if _reason is not None: _reason.append("LHS probe does not match predefined LHS sequence")
                 carryover_visits[carryover_key] = self.config.invalid_score
                 return self.config.invalid_score
            
         # Inconsistencies with the probe
         if len(lhs_probe) != lhs_length:
+            if _reason is not None: _reason.append(f"LHS probe extends beyond transcript boundary (got {len(lhs_probe)}bp, need {lhs_length}bp)")
             carryover_visits[carryover_key] = self.config.invalid_score
             return self.config.invalid_score
         if len(rhs_probe) != rhs_length:
+            if _reason is not None: _reason.append(f"RHS probe extends beyond transcript boundary (got {len(rhs_probe)}bp, need {rhs_length}bp)")
             carryover_visits[carryover_key] = self.config.invalid_score
             return self.config.invalid_score
 
@@ -1086,23 +1105,27 @@ class FlexProbeDesigner:
             if full_original_contig not in original_transcript_sequence:
                 print('WARNING: unable to find original contig for:',transcript_name, rhs_probe, original_gap_sequence, lhs_probe)
 
-        # Check for overlap with existing probes
-        for name in existing_probes.keys():
-            for probe in existing_probes[name]:
-                if probe.original_transcript_sequence == original_transcript_sequence:
-                    existing_start = probe.rhs_gene_start
-                    existing_original_gap_length = probe.original_target_end_gap - probe.original_target_start_gap if probe.is_gapfill else 0
-                    existing_end = probe.rhs_gene_start + len(probe.lhs_gene_sequence) + len(probe.rhs_gene_sequence) + existing_original_gap_length
-                    new_start = start_idx
-                    new_original_gap_length = len(original_gap_sequence) if is_gapfill else 0
-                    new_end = start_idx + len(lhs_probe) + len(rhs_probe) + new_original_gap_length
-                    # Calculate overlap amount
-                    if not ((new_end < existing_start) or (new_start > existing_end)):
-                        carryover_visits[carryover_key] = self.config.invalid_score
-                        return self.config.invalid_score
+        # Check for overlap with existing probes (skipped when max_probe_overlap == -1)
+        if self.config.max_probe_overlap >= 0:
+            for name in existing_probes.keys():
+                for probe in existing_probes[name]:
+                    if probe.original_transcript_sequence == original_transcript_sequence:
+                        existing_start = probe.rhs_gene_start
+                        existing_original_gap_length = probe.original_target_end_gap - probe.original_target_start_gap if probe.is_gapfill else 0
+                        existing_end = probe.rhs_gene_start + len(probe.lhs_gene_sequence) + len(probe.rhs_gene_sequence) + existing_original_gap_length
+                        new_start = start_idx
+                        new_original_gap_length = len(original_gap_sequence) if is_gapfill else 0
+                        new_end = start_idx + len(lhs_probe) + len(rhs_probe) + new_original_gap_length
+                        if not ((new_end < existing_start) or (new_start > existing_end)):
+                            overlap_bp = min(new_end, existing_end) - max(new_start, existing_start)
+                            if overlap_bp > self.config.max_probe_overlap:
+                                if _reason is not None: _reason.append(f"Overlaps with existing probe for '{name}' by {overlap_bp}bp (max allowed: {self.config.max_probe_overlap}bp)")
+                                carryover_visits[carryover_key] = self.config.invalid_score
+                                return self.config.invalid_score
 
         # Skip if manually excluded
         if [reverse_complement(lhs_probe),reverse_complement(rhs_probe)] in self.config.exclude_probes:
+            if _reason is not None: _reason.append("Probe pair is in the manually excluded list")
             carryover_visits[carryover_key] = self.config.invalid_score
             return self.config.invalid_score
 
@@ -1159,14 +1182,14 @@ class FlexProbeDesigner:
                             raise ValueError("Unexpected overlap condition.")
 
         if self.config.flex_0bp_genotyping and is_gapfill:
-            score_mutated = self.score_probe(*args, flex_overlap=flex_overlap)
+            score_mutated = _score_fn(*args, flex_overlap=flex_overlap, _reason=_reason)
             args = list(args)
             mut_lhs_probe = args[1]
             mut_rhs_probe = args[2]
             args[1] = lhs_probe
             args[2] = rhs_probe
             args = tuple(args)
-            score_nonmutated = self.score_probe(*args, flex_overlap=flex_overlap)
+            score_nonmutated = _score_fn(*args, flex_overlap=flex_overlap, _reason=_reason)
             score = np.mean([score_mutated, score_nonmutated])
             variant_side = None
             ### check if probes overlap with each other if they both can bind to the unexpected (wt/mut) sequence; this can happen with in/dels; allow if only option
@@ -1196,7 +1219,8 @@ class FlexProbeDesigner:
                         found = True
                         break
                 if not found:
-                    score = self.config.invalid_score 
+                    if _reason is not None: _reason.append("Variant not at end of RHS probe (flex_0bp genotyping)")
+                    score = self.config.invalid_score
             elif (mut_rhs_probe == rhs_probe) & (mut_lhs_probe != lhs_probe):
                 variant_side = 'lhs'
                 for empirical_offset in range(0, len(mut_lhs_probe)):
@@ -1205,12 +1229,14 @@ class FlexProbeDesigner:
                         found = True
                         break
                 if not found:
-                    score = self.config.invalid_score 
+                    if _reason is not None: _reason.append("Variant not at start of LHS probe (flex_0bp genotyping)")
+                    score = self.config.invalid_score
             if self.config.variant_side != None:
                 if variant_side != self.config.variant_side:
+                    if _reason is not None: _reason.append(f"Variant on '{variant_side}' probe side but config requires '{self.config.variant_side}'")
                     score = self.config.invalid_score
         else:
-            score += self.score_probe(*args, flex_overlap=flex_overlap)
+            score += _score_fn(*args, flex_overlap=flex_overlap, _reason=_reason)
         if carryover_key not in carryover_visits:
             carryover_visits[carryover_key] = score
         return score
@@ -1273,17 +1299,23 @@ class FlexProbeDesigner:
             min_bridge_length = max(self.config.min_bridge_length, target_length)
             max_bridge_length = self.config.max_bridge_length
             if min_bridge_length > max_bridge_length:
+                print(f"  No valid probe found for '{transcript_name}': variant span {target_length}bp exceeds max bridge length {max_bridge_length}bp", file=sys.stderr)
                 return []
             if max_bridge_length < target_length:
+                print(f"  No valid probe found for '{transcript_name}': variant span {target_length}bp exceeds max bridge length {max_bridge_length}bp", file=sys.stderr)
                 return []
             if target_start - self.config.lhs_probe_length < 0:
+                print(f"  No valid probe found for '{transcript_name}': variant too close to transcript start (position {target_start+1}, need at least {self.config.lhs_probe_length}bp upstream)", file=sys.stderr)
                 return []
             if len(transcript_sequence) < target_end:
+                print(f"  No valid probe found for '{transcript_name}': variant end {target_end} beyond transcript length {len(transcript_sequence)}", file=sys.stderr)
                 return []
             if len(transcript_sequence) < self.config.lhs_probe_length + self.config.rhs_probe_length + min_bridge_length - self.config.flexible_probe_length_range:
+                print(f"  No valid probe found for '{transcript_name}': transcript too short ({len(transcript_sequence)}bp) for probe design", file=sys.stderr)
                 return []
         else:
             if len(transcript_sequence) < self.config.lhs_probe_length + self.config.rhs_probe_length - self.config.flexible_probe_length_range:
+                print(f"  No valid probe found for '{transcript_name}': transcript too short ({len(transcript_sequence)}bp) for probe design", file=sys.stderr)
                 return []  # The sequence is too short to create probes
 
         if fast:  # Approximate search
@@ -1439,6 +1471,40 @@ class FlexProbeDesigner:
                 nonmutated_rhs_probe_seq = reverse_complement(nonmutated_rhs_gene_seq)
                 nonmutated_lhs_probe_seq = reverse_complement(nonmutated_lhs_gene_seq)
 
+            if score >= self.config.invalid_score:
+                reason = []
+                if is_gapfill and not self.config.flex_0bp_genotyping:
+                    # result_args may be at a position where the variant is outside the gap (e.g. lower
+                    # bound of start_idx with a small gap), which masks the real failure reason.
+                    # Build a canonical position that places the variant at the start of the gap so
+                    # we get the actual blocking constraint (GC, junction, overlap, etc.).
+                    explain_gap = max(self.config.min_bridge_length, target_length if target_length else 1)
+                    explain_start = target_start - self.config.rhs_probe_length  # variant at position 0 of gap
+                    probe_span = self.config.rhs_probe_length + explain_gap + self.config.lhs_probe_length
+                    if explain_start >= 0 and explain_start + probe_span <= len(transcript_sequence):
+                        if has_flexible_probe_length:
+                            explain_args = [explain_start, 0, 0, explain_gap]
+                        else:
+                            explain_args = [explain_start, explain_gap]
+                    else:
+                        explain_args = result_args  # fallback if near transcript boundary
+                else:
+                    explain_args = result_args
+                self._test_flex_probe(
+                    np.array(explain_args),
+                    transcript_name, transcript_sequence, original_transcript_sequence,
+                    expect_hits, is_gapfill,
+                    target_start if is_gapfill else None,
+                    target_length if is_gapfill else None,
+                    {},  # fresh carryover_visits so explain path isn't short-circuited
+                    existing_probes, flex_probes,
+                    original_target_start if is_gapfill else None,
+                    original_target_end if is_gapfill else None,
+                    predefined_lhs,
+                    reason
+                )
+                msg = reason[0] if reason else f"score {score:.1f} >= invalid threshold {self.config.invalid_score:.0f}"
+                print(f"  No valid probe found for '{transcript_name}': {msg}", file=sys.stderr)
             if score < self.config.invalid_score:
                 # rhs_offtarget_hits, rhs_offtarget_names = self.blast_hits(rhs_gene_seq)
                 # lhs_offtarget_hits, lhs_offtarget_names = self.blast_hits(lhs_gene_seq)
