@@ -235,6 +235,12 @@ def main(
         hgvsc = row['HGVSc']
         sequence: Optional[str] = row['Sequence'] if 'Sequence' in row and pd.notna(row['Sequence']) else None
 
+        # Normalize colon-separated format: ENST00000378444.4:c.4376A>G -> ENST00000378444.4 c.4376A>G
+        if ' ' not in hgvsc and ':' in hgvsc:
+            transcript_part, hgvsc_part = hgvsc.split(':', 1)
+            gene = transcript_part
+            hgvsc = f"{transcript_part} {hgvsc_part}"
+
         is_zerobp = False
         if len(hgvsc.split(" ")) == 1 or '0bp' in hgvsc:
             is_zerobp = True
