@@ -245,6 +245,7 @@ def main(
 
         is_zerobp = False
         if len(hgvsc.split(" ")) == 1 or '0bp' in hgvsc:
+            print("Warning, assuming that probe", hgvsc, "is 0bp")
             is_zerobp = True
 
         if is_zerobp:
