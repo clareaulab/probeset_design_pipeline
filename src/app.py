@@ -233,6 +233,8 @@ def main(
     for index, row in targets.iterrows():
         gene = row['Gene']
         hgvsc = row['HGVSc']
+        if hgvsc.startswith("c."):
+            hgvsc = gene + " " + hgvsc
         sequence: Optional[str] = row['Sequence'] if 'Sequence' in row and pd.notna(row['Sequence']) else None
 
         # Normalize colon-separated format: ENST00000378444.4:c.4376A>G -> ENST00000378444.4 c.4376A>G
