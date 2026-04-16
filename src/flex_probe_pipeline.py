@@ -36,6 +36,7 @@ Note: LHS refers to the left-hand side of the gene sequence, and RHS refers to t
 rhs_order_prefix = "/5Phos/"
 rhs_order_probe_barcode_bridge = "ACGCGGTTAGCACGTANN"
 rhs_order_suffix = "CGGTCCTAGCAA"
+v2_rhs_order_suffix = "CCCATATAAGAAA"
 rhs_order_suffix_visium = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 lhs_order_prefix = "CCTTGGCACCCGAGAATTCCA"
@@ -695,27 +696,32 @@ class Probe:
         return self.gap_length is not None
 
     # IDT compatible order format
-    def rhs_probe_order(self, barcode: int = 0, visium: bool = False) -> str:
+    def rhs_probe_order(self, barcode: int = 0, visium: bool = False, flexv2: bool = False) -> str:
         if barcode > 0 and visium:
             raise ValueError("Visium probes do not support multiple barcodes.")
+        if barcode > 0 and flexv2:
+            raise ValueError("Flexv2 probes are not ordered with barcode sequences.")
         if visium:
             return f"{rhs_order_prefix}{self.rhs_probe}{rhs_order_suffix_visium}"
+        if flexv2:
+            return f"{rhs_order_prefix}{self.rhs_probe}{v2_rhs_order_suffix}"
 
         return f"{rhs_order_prefix}{self.rhs_probe}{rhs_order_probe_barcode_bridge}{order_barcode_seqs[barcode]}{rhs_order_suffix}"
 
     def lhs_probe_order(self, truseq: bool = False) -> str:
         return f"{lhs_truseq_prefix if truseq else lhs_order_prefix}{self.lhs_probe}"
 
-    def probe_order(self, barcodes: int = 1, visium: bool = False) -> list[tuple[str, str]]:
+    def probe_order(self, barcodes: int = 1, visium: bool = False, flexv2: bool = False) -> list[tuple[str, str]]:
         """
         Get the IDT compatible order for the probes.
         :param barcodes: The number of barcodes to order.
         :param visium: If True, we will use the Visium probe ordering.
+        :param flexv2: If True, we will use the Flexv2 probe ordering.
         :return: The IDT compatible order (tuples of rhs and lhs probes).
         """
         idt_order = []
         for i in range(barcodes):
-            idt_order.append((self.rhs_probe_order(i, visium=visium), self.lhs_probe_order()))
+            idt_order.append((self.rhs_probe_order(i, visium=visium, flexv2=flexv2), self.lhs_probe_order()))
         return idt_order
 
 
@@ -1821,11 +1827,12 @@ class FlexProbeDesigner:
             search_method=search_method
         )
 
-    def convert_probe_set_to_df(self, probes: dict[str, list[Probe]], visium: bool = False, truseq: bool = False, barcode: int | list[int] = 0) -> pd.DataFrame:
+    def convert_probe_set_to_df(self, probes: dict[str, list[Probe]], visium: bool = False, flexv2: bool = False, truseq: bool = False, barcode: int | list[int] = 0) -> pd.DataFrame:
         """
         Convert a set of probes to a dataframe.
         :param probes: The dictionary of probe identifier -> list of designed probes.
         :param visium: Whether to design probes for Visium.
+        :param flexv2: Whether to design probes for FlexV2.
         :param truseq: Whether to replace the standard handle with the TruSeq handle.
         :param barcode: The barcode(s) to use for the probe.
         :return: The dataframe.
@@ -1886,7 +1893,7 @@ class FlexProbeDesigner:
                     df["rhs_probe"].append(probe.rhs_probe)
                     df["rhs_gene_sequence"].append(probe.rhs_gene_sequence)
                     df["lhs_IDT_order"].append(probe.lhs_probe_order(truseq))
-                    df["rhs_IDT_order"].append(probe.rhs_probe_order(barcode, visium))
+                    df["rhs_IDT_order"].append(probe.rhs_probe_order(barcode, visium, flexv2))
                     df["lhs_GC"].append(probe.lhs_GC)
                     df["rhs_GC"].append(probe.rhs_GC)
                     df["GC_difference"].append(abs(probe.lhs_GC - probe.rhs_GC))
@@ -1951,6 +1958,7 @@ class FlexProbeDesigner:
                                    max_iterations_per_probe: int = 1_000,
                                    initial_temp: float = 500.,
                                    visium: bool = False,
+                                   flexv2: bool = False,
                                    truseq: bool = False,
                                    fast: bool = False,
                                    barcode: int | list[int] = 0,
@@ -2065,8 +2073,8 @@ class FlexProbeDesigner:
                 all_probes[transcript_name] = [probe for probe in probes if probe not in removed]
 
         if visium:
-            return self.convert_probe_set_to_df(all_probes, truseq=truseq, barcode=barcode), self.convert_probe_set_to_df(all_probes, truseq=truseq, barcode=barcode, visium=True)
-        return self.convert_probe_set_to_df(all_probes, truseq=truseq, barcode=barcode)
+            return self.convert_probe_set_to_df(all_probes, truseq=truseq, barcode=barcode, flexv2=flexv2), self.convert_probe_set_to_df(all_probes, truseq=truseq, barcode=barcode, visium=True, flexv2=flexv2)
+        return self.convert_probe_set_to_df(all_probes, truseq=truseq, barcode=barcode, flexv2=flexv2)
 
     def generate_gapfilling_flex_probe_set_df(self,
                                                 transcript_sequences: dict[str, str | tuple[str, str]],
@@ -2077,6 +2085,7 @@ class FlexProbeDesigner:
                                                 max_iterations_per_probe: int = 100_000,
                                                 initial_temp: float = 500.,
                                                 visium: bool = False,
+                                                flexv2: bool = False,
                                                 truseq: bool = True,
                                                 fast: bool = False,
                                                 barcode: int | list[int] = 0,
@@ -2224,8 +2233,8 @@ class FlexProbeDesigner:
                 all_probes[transcript_name] = [probe for probe in probes if probe not in removed]
 
         if visium:
-            return self.convert_probe_set_to_df(all_probes, truseq=truseq, barcode=barcode, visium=True)
-        return self.convert_probe_set_to_df(all_probes, truseq=truseq, barcode=barcode)
+            return self.convert_probe_set_to_df(all_probes, truseq=truseq, barcode=barcode, visium=True, flexv2=flexv2)
+        return self.convert_probe_set_to_df(all_probes, truseq=truseq, barcode=barcode, flexv2=flexv2)
 
     def generate_expect_hits(self, sequences: list[str]) -> list[int]:
         if self.fast:

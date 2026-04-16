@@ -302,7 +302,8 @@ def main(
         target_ends,
         expect_hits=None,
         n_probes=1,
-        visium='visium' in technology,
+        visium='visium' in technology.lower(),
+        flexv2='flexv2' in technology.lower(),
         barcode=barcodes,
         search_method=search_method
     )
