@@ -143,6 +143,7 @@ The output file contains designed probes with IDT-compatible ordering sequences.
 
 - **LHS probe**: Left-hand side probe with 5' adapter sequence
 - **RHS probe**: Right-hand side probe with 5' phosphate, barcode bridge, and 3' adapter
-- **Gap sequence**: The bridging sequence spanning the target variant
+
+- There is also an expected gap sequence extracted and included, though this is not ordered from IDT as GIFT-seq will detect endogenous RNA sequence for the gap.
 
 Probes are ordered 5' to 3' and include all necessary adapter sequences for the selected technology.
