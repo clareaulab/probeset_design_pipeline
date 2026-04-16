@@ -345,7 +345,7 @@ if __name__ == "__main__":
         "--technology",
         type=str,
         help="Technology used for the analysis (e.g., 'FlexV1', 'FlexV2', 'VisiumHD').",
-        default="FlexV1",
+        default="FlexV2",
         choices=["FlexV1", "FlexV2", "VisiumHD"],
     )
     parser.add_argument(
