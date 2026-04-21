@@ -152,6 +152,8 @@ def main(
 
     match technology:
         case "FlexV1":
+            if barcodes < 1:
+                barcodes = 1  # Default to first barcode
             if organism == "human":
                 probeset = "human_flex_v1"
             elif organism == "mouse":
@@ -352,7 +354,7 @@ if __name__ == "__main__":
         "--barcodes",
         type=int,
         help="Number of barcodes used in the experiment, currently only supports Flex v1 multiplexing.",
-        default=1
+        default=0
     )
 
     parser.add_argument(
