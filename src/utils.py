@@ -6,6 +6,7 @@ from io import StringIO
 from typing import Union
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from Bio.Blast import NCBIXML
 from pyensembl import Genome, Transcript, Exon
@@ -263,10 +264,12 @@ def blast_search(blast_db: str,
     :return: The BLAST results.
     """
     multi_sequences = not isinstance(sequence, str)
+    # BLAST drops a '*' wildcard from a query, which shifts every later position.
+    # 'N' keeps the position and aligns as one mismatch.
     if multi_sequences:
-        fasta = "\n".join([f">{i}\n{seq}" for i, seq in enumerate(sequence)])
+        fasta = "\n".join([f">{i}\n{seq.replace('*', 'N')}" for i, seq in enumerate(sequence)])
     else:
-        fasta = sequence
+        fasta = sequence.replace('*', 'N')
     blastn_command = ["blastn", "-db", str(blast_db), "-evalue", str(evalue), "-outfmt", "5", "-num_threads", "4", "-task", "blastn-short"]
     blast_out = subprocess.run(blastn_command, input=fasta, text=True, stdout=subprocess.PIPE).stdout
     if len(blast_out) == 0:
@@ -304,10 +307,198 @@ def probe_blast_search(blast_db: str,
 
     # 10X recommends at least 5 mismatches for a probe to be considered unique, so select alignments with < 5 mismatches to be "hits"
     # Also compute hits wrt gene name only
-    n_lhs_hits = len(set([aln.hit_def.split(" ")[0] for aln in lhs_hits.alignments if sum([hsp.identities for hsp in aln.hsps]) >= len(lhs_sequence) - 5]))
-    n_rhs_hits = len(set([aln.hit_def.split(" ")[0] for aln in rhs_hits.alignments if sum([hsp.identities for hsp in aln.hsps]) >= len(rhs_sequence) - 5]))
+    n_lhs_hits = len(set([aln.hit_def.split(" ")[0] for aln in lhs_hits.alignments if max(hsp.identities for hsp in aln.hsps) >= len(lhs_sequence) - 5]))
+    n_rhs_hits = len(set([aln.hit_def.split(" ")[0] for aln in rhs_hits.alignments if max(hsp.identities for hsp in aln.hsps) >= len(rhs_sequence) - 5]))
 
     return n_lhs_hits, n_rhs_hits
+
+
+class MismatchScanner:
+    """
+    Find every place in a background where a short query matches with at most a given number of
+    mismatches, on either strand. Unlike BLAST, the search is exact: it misses no such match.
+
+    An 'N' (in either case) is ambiguous, so it always counts as a match, in the query and in the
+    background. Any other non-ACGT character, including the other IUPAC codes, counts as a mismatch
+    unless it faces an 'N'.
+
+    It uses the pigeonhole principle. A query with at most m mismatches has at most m // 2 mismatches
+    in its first k bases or in its last k bases (2k <= query length). Every variant of these two seeds
+    with at most m // 2 substitutions is looked up in one pass over the background, and each candidate
+    is then checked base by base over the whole query. Insertions and deletions are not counted as matches.
+    """
+    _N = 4  # An ambiguous base. It matches every base.
+    _OTHER = 5  # Any other character. It matches no base.
+    _SEPARATOR = 6  # Between two background sequences
+    _PAD = 7  # Fills a query up to the length of the longest query
+    _ENCODE = np.full(256, _OTHER, dtype=np.uint8)
+    for _i, _base in enumerate("ACGTN"):
+        _ENCODE[ord(_base)] = _i
+        _ENCODE[ord(_base.lower())] = _i
+    _COMPLEMENT = np.array([3, 2, 1, 0, _N, _OTHER], dtype=np.uint8)
+    # A background seed window with more non-ACGT bases than this is checked against every query,
+    # rather than looked up once for each base its non-ACGT bases could be
+    _MAX_EXPANDED = 4
+
+    def __init__(self, sequences: dict[str, str], seed_length: int = 12, chunk_size: int = 1 << 24):
+        """
+        :param sequences: The background. Key is the gene name, a space, and the transcript id; value is the sequence.
+        :param seed_length: The maximal seed length. 12 keeps one lookup table at 16 MB.
+        :param chunk_size: The number of background positions handled at once.
+        """
+        self.names = list(sequences.keys())
+        self.genes = [name.split(" ")[0] for name in self.names]
+        text = "#".join(sequences[name] for name in self.names).encode("ascii", errors="replace")
+        self.background = self._ENCODE[np.frombuffer(text, dtype=np.uint8)]
+        lengths = np.array([len(sequences[name]) for name in self.names], dtype=np.int64)
+        self.starts = np.concatenate([[0], np.cumsum(lengths + 1)[:-1]]).astype(np.int64)
+        self.ends = self.starts + lengths
+        # One separator (never a match) between sequences, so no window crosses two of them
+        self.background[self.ends[:-1]] = self._SEPARATOR
+        self.seed_length = seed_length
+        self.chunk_size = chunk_size
+
+    def _encode_query(self, query: str) -> np.ndarray:
+        return self._ENCODE[np.frombuffer(query.encode("ascii", errors="replace"), dtype=np.uint8)]
+
+    @staticmethod
+    def _seed_variants(seed: np.ndarray, max_mismatches: int) -> np.ndarray:
+        """
+        All codes of the seed with at most max_mismatches substitutions. A non-ACGT base takes every base
+        at no cost. This is exact for an 'N' and a superset for any other base, which the full check removes.
+        """
+        k = len(seed)
+        wild = [i for i in range(k) if seed[i] > 3]
+        known = [i for i in range(k) if seed[i] <= 3]
+        weights = 4 ** np.arange(k - 1, -1, -1, dtype=np.int64)
+        base_code = int(np.sum(np.where(seed > 3, 0, seed).astype(np.int64) * weights))
+        deltas = []
+        for n_extra in range(max_mismatches + 1):
+            for extra in itertools.combinations(known, n_extra):
+                choices = [[b for b in range(4) if b != seed[p]] for p in extra]
+                for bases in itertools.product(*choices):
+                    deltas.append(sum((b - int(seed[p])) * int(weights[p]) for p, b in zip(extra, bases)))
+        if len(deltas) * 4 ** len(wild) >= 4 ** k // 4:
+            return np.arange(4 ** k, dtype=np.int64)  # Close to every code, so take them all
+        codes = base_code + np.array(deltas, dtype=np.int64)
+        for p in wild:
+            codes = (codes[:, None] + np.arange(4, dtype=np.int64)[None, :] * weights[p]).ravel()
+        return np.unique(codes)
+
+    def search(self, queries: list[str], max_mismatches: int = 4) -> list[dict[str, int]]:
+        """
+        :param queries: The query sequences, in any case. Each must be at least 2 bases long.
+        :param max_mismatches: The highest number of mismatches that still counts as a match.
+        :return: For each query, the genes it matches, each with its lowest number of mismatches.
+        """
+        if len(queries) == 0:
+            return []
+        # Both strands: the reverse complement of a query is searched as one more query
+        encoded = [self._encode_query(q) for q in queries]
+        encoded += [self._COMPLEMENT[q[::-1]] for q in encoded]
+        lengths = np.array([len(q) for q in encoded], dtype=np.int64)
+        k = int(min(self.seed_length, lengths.min() // 2))
+        seed_mismatches = max_mismatches // 2
+        weights = 4 ** np.arange(k - 1, -1, -1, dtype=np.int64)
+
+        # Seed table: code -> (query, offset of the seed in the query)
+        key_codes, key_query, key_offset = [], [], []
+        for qi, q in enumerate(encoded):
+            for offset in (0, len(q) - k):
+                variants = self._seed_variants(q[offset:offset + k], seed_mismatches)
+                key_codes.append(variants)
+                key_query.append(np.full(len(variants), qi, dtype=np.int64))
+                key_offset.append(np.full(len(variants), offset, dtype=np.int64))
+        key_codes = np.concatenate(key_codes)
+        order = np.argsort(key_codes, kind="stable")
+        key_codes, key_query, key_offset = key_codes[order], np.concatenate(key_query)[order], np.concatenate(key_offset)[order]
+        unique_codes, first_key, key_counts = np.unique(key_codes, return_index=True, return_counts=True)
+        in_table = np.zeros(4 ** k, dtype=bool)
+        in_table[unique_codes] = True
+        # Every (query, seed offset) pair, for windows that are checked against every query
+        pair_query = np.repeat(np.arange(len(encoded), dtype=np.int64), 2)
+        pair_offset = np.stack([np.zeros(len(encoded), dtype=np.int64), lengths - k], axis=1).ravel()
+
+        max_len = int(lengths.max())
+        padded = np.full((len(encoded), max_len), self._PAD, dtype=np.uint8)  # Masked below
+        for qi, q in enumerate(encoded):
+            padded[qi, :len(q)] = q
+
+        def candidates(seed_positions: np.ndarray, seed_codes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            """Expand each seed hit to every (query, offset) that owns its code. Return queries and query starts."""
+            slot = np.searchsorted(unique_codes, seed_codes)
+            counts = key_counts[slot]
+            positions = np.repeat(seed_positions, counts)
+            first = np.repeat(first_key[slot], counts)
+            within = np.arange(len(positions)) - np.repeat(np.cumsum(counts) - counts, counts)
+            keys = first + within
+            return key_query[keys], positions - key_offset[keys]
+
+        best = [dict() for _ in queries]
+        n = len(self.background)
+        for chunk_start in range(0, n - k + 1, self.chunk_size):
+            chunk_end = min(chunk_start + self.chunk_size, n - k + 1)
+            window = self.background[chunk_start:chunk_end + k - 1]
+            m = chunk_end - chunk_start
+            codes = np.zeros(m, dtype=np.int64)
+            n_ambiguous = np.zeros(m, dtype=np.int64)  # 'N' and other non-ACGT bases
+            crosses = np.zeros(m, dtype=bool)
+            for j in range(k):
+                column = window[j:j + m]
+                codes = codes * 4 + np.where(column <= 3, column, 0)
+                n_ambiguous += (column == self._N) | (column == self._OTHER)
+                crosses |= column == self._SEPARATOR
+            found_query, found_start = [], []
+
+            # Seed windows of ACGT only: one lookup each
+            hits = np.flatnonzero((n_ambiguous == 0) & ~crosses & in_table[codes])
+            q, s = candidates(hits + chunk_start, codes[hits])
+            found_query.append(q)
+            found_start.append(s)
+
+            # Seed windows with a few non-ACGT bases: one lookup for each base they could be. For an 'N'
+            # this keeps it a match. Any other base is a mismatch whatever it is replaced with, so the
+            # replacement that agrees with the query seed counts it once, as the full check below does.
+            ambiguous = np.flatnonzero((n_ambiguous > 0) & ~crosses)
+            for c in range(1, self._MAX_EXPANDED + 1):
+                rows = ambiguous[n_ambiguous[ambiguous] == c]
+                if len(rows) == 0:
+                    continue
+                block = window[rows[:, None] + np.arange(k)[None, :]]
+                variable = np.nonzero(block > 3)[1].reshape(len(rows), c)
+                combos = np.array(list(itertools.product(range(4), repeat=c)), dtype=np.int64)
+                expanded = codes[rows][:, None] + weights[variable] @ combos.T
+                row_idx, combo_idx = np.nonzero(in_table[expanded])
+                q, s = candidates(rows[row_idx] + chunk_start, expanded[row_idx, combo_idx])
+                found_query.append(q)
+                found_start.append(s)
+
+            # Seed windows with many non-ACGT bases (rare): check against every query
+            many = ambiguous[n_ambiguous[ambiguous] > self._MAX_EXPANDED]
+            found_query.append(np.tile(pair_query, len(many)))
+            found_start.append(np.repeat(many + chunk_start, len(pair_query)) - np.tile(pair_offset, len(many)))
+
+            query_idx, starts = np.concatenate(found_query), np.concatenate(found_start)
+            if len(starts) == 0:
+                continue
+            # The whole query must fall inside one background sequence
+            seq_idx = np.searchsorted(self.starts, starts, side="right") - 1
+            inside = (starts >= 0) & (seq_idx >= 0)
+            inside[inside] &= starts[inside] + lengths[query_idx[inside]] <= self.ends[seq_idx[inside]]
+            query_idx, starts, seq_idx = query_idx[inside], starts[inside], seq_idx[inside]
+            for batch in range(0, len(starts), 1 << 20):
+                qb, sb, tb = query_idx[batch:batch + (1 << 20)], starts[batch:batch + (1 << 20)], seq_idx[batch:batch + (1 << 20)]
+                target = self.background[sb[:, None] + np.minimum(np.arange(max_len)[None, :], lengths[qb][:, None] - 1)]
+                query = padded[qb]
+                match = ((target == query) & (query <= 3)) | (query == self._N) | (target == self._N)
+                mismatches = (~match & (query != self._PAD)).sum(axis=1)
+                keep = mismatches <= max_mismatches
+                for qi, ti, mm in zip(qb[keep], tb[keep], mismatches[keep]):
+                    query_number = int(qi) % len(queries)
+                    gene = self.genes[ti]
+                    if mm < best[query_number].get(gene, max_mismatches + 1):
+                        best[query_number][gene] = int(mm)
+        return best
 
 
 def rank_and_filter_transcripts(transcripts: list[Transcript], use_support=True, filter_transcripts=True) -> list[Transcript]:
@@ -328,7 +519,7 @@ def transcriptome(genome: Genome, filter_incomplete: bool = True, filter_biotype
     :param genome: The genome to work with.
     :param filter_incomplete: Whether to filter out incomplete transcripts.
     :param filter_biotypes: The biotypes to filter out.
-    :return: The transcriptome. Key is transcript ID, value is the coding sequence.
+    :return: The transcriptome. Key is gene name and transcript ID, value is the full transcript sequence.
     """
     transcriptome = dict()
     unnamed_count = 0
@@ -347,7 +538,9 @@ def transcriptome(genome: Genome, filter_incomplete: bool = True, filter_biotype
             if filter_biotypes is not None and transcript.biotype in filter_biotypes:
                 continue
             try:
-                sequence = transcript.coding_sequence if transcript.complete else transcript.sequence
+                # Use the full transcript (including UTRs). Probes bind the mature mRNA, so an
+                # off-target match in an untranslated region is as real as one in a coding region.
+                sequence = transcript.sequence
             except Exception:
                 continue  # Skip transcripts with annotation issues (e.g., duplicate exon IDs)
             if sequence is not None:

@@ -24,7 +24,7 @@ from tqdm.auto import tqdm
 from utils import max_homopolymer_length, blast_search, transcriptome, rank_and_filter_transcripts, get_melting_temp, \
     find_overlaps_with_flex, check_overlap_by_alignment, has_tandem_repeat, fetch_human_flex_v2_probeset, \
     fetch_mouse_visiumhd_probeset, fetch_mouse_flex_v1_probeset, fetch_mouse_flex_v2_probeset, \
-    fetch_human_visiumhd_probeset, fetch_human_flex_v1_probeset
+    fetch_human_visiumhd_probeset, fetch_human_flex_v1_probeset, MismatchScanner
 
 """
 Note: LHS refers to the left-hand side of the gene sequence, and RHS refers to the right-hand side of the gene sequence.
@@ -113,6 +113,7 @@ class FlexProbeConfig:
     tx_min_gc: float = 0.2
     tx_max_gc: float = 0.8
     evalue_cutoff: float = 1.0  # The evalue cutoff for blast hits
+    max_offtarget_mismatches: int = 4  # An arm with at most this many mismatches to a background sequence is an off-target hit
     flex_0bp_genotyping: bool = False  # If True, we will make 0bp genotyping probes
     variant_side: str = None  # Desired probe with the variant for flex_0bp_genotyping (lhs or rhs)
 
@@ -346,9 +347,17 @@ class SnvProbeHelper:
                 original_sequence = transcript.coding_sequence
                 is_coding = True
             except ValueError:
-                # Transcript doesn't have a start codon, fall back to full sequence
-                original_sequence = transcript.sequence
-                is_coding = False
+                try:
+                    # Start codon but no stop codon: c.1 is still defined, so keep the c. frame
+                    original_sequence = transcript.sequence[transcript.first_start_codon_spliced_offset:]
+                    is_coding = True
+                except ValueError:
+                    # No start codon, so there is no c. frame: read positions as full-transcript positions
+                    original_sequence = transcript.sequence
+                    is_coding = False
+                    if snv_start is not None:
+                        print(f"WARNING: {transcript.transcript_id} has no start codon; "
+                              f"position {snv_start} is read as a full-transcript position", file=sys.stderr)
 
         if snv_action == '0bp':
             mutated_sequence = original_sequence
@@ -356,38 +365,32 @@ class SnvProbeHelper:
             mutated_snv_end = None
             return original_sequence, mutated_sequence, mutated_snv_start, mutated_snv_end
 
+        wildcard_idx = None  # Index of a '*' wildcard substitution in the mutated sequence, if any
         if snv_start is not None:
             # Convert to 1 indexed
             snv_start_idx = snv_start - 1
             snv_end_idx = snv_end
             # print(snv_start_idx, snv_end_idx)
 
+            if is_coding and (snv_start < 1 or snv_end > len(original_sequence)):
+                # A c. position must lie inside the coding sequence. 5' UTR (c.-N) and 3' UTR (c.*N)
+                # positions are not supported, and a transcript coordinate must not be passed as a c. position.
+                return None
+            if is_coding and len(original_sequence) < snv_end_idx + self.config.rhs_probe_length:
+                # The RHS arm reaches past the stop codon. Add the 3' UTR, which is part of the mRNA.
+                # The sequence still starts at c.1, so every c. position keeps its index.
+                original_sequence = transcript.sequence[transcript.first_start_codon_spliced_offset:]
             if len(original_sequence) < snv_end_idx + self.config.rhs_probe_length and validate: # <- Needed to prevent string index errors
-                if is_coding:  # Retry with the full sequence
-                    return self.modify_gene_sequence(
-                        transcript.sequence,
-                        snv_start,
-                        snv_end,
-                        snv_action,
-                        snv_data,
-                        validate=validate
-                    )
                 return None
 
             if snv_action == "mutation":
                 from_nucleotide, to_nucleotide = snv_data.split(">")
+                if to_nucleotide == '*':
+                    # Wildcard substitution: keep the '*' at this position when non-letters are stripped below
+                    wildcard_idx = snv_start_idx
                 # assert from_nucleotide == original_sequence[snv_start], "SNV data does not match the original sequence."
                 if from_nucleotide != original_sequence[snv_start_idx] and to_nucleotide != '*' and validate:
                     # print("SNV data does not match the original sequence.", from_nucleotide, to_nucleotide, original_sequence[snv_start_idx-1:snv_start_idx+2])
-                    if is_coding:  # Retry with the full sequence
-                        return self.modify_gene_sequence(
-                            transcript.sequence,
-                            snv_start,
-                            snv_end,
-                            snv_action,
-                            snv_data,
-                            validate=validate
-                        )
                     return None
                 mutated_sequence = original_sequence[:snv_start_idx] + to_nucleotide + original_sequence[snv_end_idx:]
                 mutated_snv_start = snv_start
@@ -399,15 +402,6 @@ class SnvProbeHelper:
                 # assert inverted_sequence == conversion, "SNV data does not match the inverted sequence."
                 if inverted_sequence != conversion and validate:
                     # print("SNV data does not match the inverted sequence.")
-                    if is_coding:  # Retry with the full sequence
-                        return self.modify_gene_sequence(
-                            transcript.sequence,
-                            snv_start,
-                            snv_end,
-                            snv_action,
-                            snv_data,
-                            validate=validate
-                        )
                     return None
                 mutated_sequence = original_sequence[:snv_start_idx] + inverted_sequence + original_sequence[snv_end_idx:]
                 mutated_snv_start = snv_start
@@ -418,7 +412,9 @@ class SnvProbeHelper:
                 mutated_snv_end = snv_start - 1 ## in the mutated sequence, this could be a 0bp probe; target_length should be 0
             elif snv_action == "insertion":
                 inserted_sequence = snv_data.replace("ins", "")
-                mutated_sequence = original_sequence[:snv_start_idx] + inserted_sequence + original_sequence[snv_start_idx:]
+                # HGVS c.N_N+1ins places the insertion after base N, which is
+                # 0-indexed position N (= snv_start), not snv_start_idx
+                mutated_sequence = original_sequence[:snv_start] + inserted_sequence + original_sequence[snv_start:]
                 mutated_snv_start = snv_start
                 mutated_snv_end = snv_end + len(inserted_sequence)
             elif snv_action == "deletion-insertion":
@@ -432,15 +428,6 @@ class SnvProbeHelper:
                 # Note that the duplication index is to the left of the duplicated nucleotide
                 if not original_sequence[snv_start_idx:snv_end_idx].startswith(duplicated) and validate:
                     # print("SNV data does not match the original sequence.")
-                    if is_coding:  # Retry with the full sequence
-                        return self.modify_gene_sequence(
-                            transcript.sequence,
-                            snv_start,
-                            snv_end,
-                            snv_action,
-                            snv_data,
-                            validate=validate
-                        )
                     return None
                 if duplicated == '':
                     # If the duplicated sequence is empty, we just insert the original sequence
@@ -454,15 +441,6 @@ class SnvProbeHelper:
                 mutated_snv_start = snv_start
                 mutated_snv_end = snv_end
             else:
-                if is_coding:  # Retry with the full sequence
-                    return self.modify_gene_sequence(
-                        transcript.sequence,
-                        snv_start,
-                        snv_end,
-                        snv_action,
-                        snv_data,
-                        validate=validate
-                    )
                 return None
         else:
             mutated_sequence = original_sequence
@@ -471,8 +449,13 @@ class SnvProbeHelper:
 
         original_sequence = [char for char in original_sequence if char.isalpha()]
         original_sequence = "".join(original_sequence)
-        mutated_sequence = [char for char in mutated_sequence if char.isalpha()]
-        mutated_sequence = "".join(mutated_sequence)
+        if wildcard_idx is None:
+            mutated_sequence = [char for char in mutated_sequence if char.isalpha()]
+            mutated_sequence = "".join(mutated_sequence)
+        else:
+            # Strip non-letters on both sides of the wildcard, but keep the wildcard itself
+            mutated_sequence = ("".join(char for char in mutated_sequence[:wildcard_idx] if char.isalpha()) + '*' +
+                                "".join(char for char in mutated_sequence[wildcard_idx + 1:] if char.isalpha()))
         return original_sequence, mutated_sequence, mutated_snv_start, mutated_snv_end
 
     def get_gene_sequence(self,
@@ -542,7 +525,8 @@ class SnvProbeHelper:
                     self.last_transcript_id = transcript.transcript_id
                     return results
 
-        raise ValueError(f"No correct protein coding transcripts found for {gene_name} with SNV at {snv_start}.")
+        raise ValueError(f"No correct protein coding transcripts found for {gene_name} with SNV at {snv_start}. "
+                         f"A c. position must lie inside the coding sequence and match its reference bases.")
 
     def parse_snv_info(self, dna_snv_string: str) -> tuple[int, int, str, str, int]:
         """
@@ -741,6 +725,7 @@ class FlexProbeDesigner:
         self.config = config
         self.fast = fast
         self.blast_db = self.working_dir / "blast_db" / "background"
+        self._mismatch_scanner = None  # Built on first use, from the same background as the BLAST database
 
         # We will cache the blast hits to avoid redundant calls
         self.blast_hits = functools.lru_cache(maxsize=None)(self.blast_hits)
@@ -838,7 +823,9 @@ class FlexProbeDesigner:
         for aln in blast_out.alignments:
             name = aln.hit_def.split(" ")[0]
             # 10X recommends at least 5 mismatches for a probe to not hybridize efficiently, so select alignments with < 5 mismatches to be "hits"
-            matches = sum([hsp.identities for hsp in aln.hsps])
+            # A hit must hold the whole query in ONE local alignment. Summing over HSPs would let scattered
+            # partial matches on a long subject add up to the query length without containing it.
+            matches = max(hsp.identities for hsp in aln.hsps)
             if matches >= len(sequence) - 5:
                 hits[name].append(aln)
 
@@ -1709,20 +1696,34 @@ class FlexProbeDesigner:
 
         assert len(lhs_results) == len(lhs_seqs) and len(rhs_results) == len(rhs_seqs)
 
+        # 10X recommends at least 5 mismatches for a probe to not hybridize efficiently, so an arm with
+        # at most max_offtarget_mismatches (default 4) mismatches is a "hit". BLAST cannot report a 25-nt
+        # arm with 3 or more mismatches at this e-value, so an exact mismatch scan finds those. BLAST
+        # still adds the hits that hold a small insertion or deletion, which the scan does not count.
+        max_mismatches = self.config.max_offtarget_mismatches
+        if self._mismatch_scanner is None:
+            self._mismatch_scanner = MismatchScanner(self.config.background)
+        # One pass over the background serves both sides
+        scan = self._mismatch_scanner.search(list(lhs_seqs) + list(rhs_seqs), max_mismatches)
+        lhs_scan, rhs_scan = scan[:len(lhs_seqs)], scan[len(lhs_seqs):]
+
         for i, (lhs_result, rhs_result, expect_hits) in enumerate(zip(lhs_results, rhs_results, expect_hits or [1]*len(lhs_seqs))):
             lhs_hits = defaultdict(list)
             rhs_hits = defaultdict(list)
-            for aln in lhs_result.alignments:
+            for aln in (lhs_result.alignments if lhs_result else []):
                 name = aln.hit_def.split(" ")[0]
-                # 10X recommends at least 5 mismatches for a probe to not hybridize efficiently, so select alignments with < 5 mismatches to be "hits"
-                matches = sum([hsp.identities for hsp in aln.hsps])
-                if matches >= len(lhs_seqs[i]) - 5:
+                matches = max(hsp.identities for hsp in aln.hsps)
+                if matches >= len(lhs_seqs[i]) - max_mismatches:
                     lhs_hits[name].append(aln)
-            for aln in rhs_result.alignments:
+            for aln in (rhs_result.alignments if rhs_result else []):
                 name = aln.hit_def.split(" ")[0]
-                matches = sum([hsp.identities for hsp in aln.hsps])
-                if matches >= len(rhs_seqs[i]) - 5:
+                matches = max(hsp.identities for hsp in aln.hsps)
+                if matches >= len(rhs_seqs[i]) - max_mismatches:
                     rhs_hits[name].append(aln)
+            for name in lhs_scan[i]:
+                lhs_hits.setdefault(name, [])
+            for name in rhs_scan[i]:
+                rhs_hits.setdefault(name, [])
 
             all_hits.append((len(lhs_hits), len(rhs_hits)))
             all_names.append((list(lhs_hits.keys()), list(rhs_hits.keys())))
@@ -1837,6 +1838,10 @@ class FlexProbeDesigner:
         :param barcode: The barcode(s) to use for the probe.
         :return: The dataframe.
         """
+        for name, probe_list in probes.items():
+            for probe in probe_list:
+                if '*' in probe.lhs_probe or '*' in probe.rhs_probe:
+                    raise ValueError(f"'{name}': an oligo arm holds a '*' wildcard and cannot be ordered.")
         df = dict(
             name=[],  # The name of the transcript
 
@@ -2050,8 +2055,9 @@ class FlexProbeDesigner:
                 all_probes[transcript_name] = []
             else:
                 all_probes[transcript_name] = probes
-        # If we are running with approximate search, we should filter out probes that have mismatches
-        if fast:
+        # Filter out probes with off-target hits. This requires the BLAST database,
+        # which is only built when BLAST is enabled (i.e. self.fast is False).
+        if not self.fast:
             lhs_seqs = [probe.lhs_gene_sequence for probes in all_probes.values() for probe in probes]
             rhs_seqs = [probe.rhs_gene_sequence for probes in all_probes.values() for probe in probes]
             expect_hits = None if not expect_hits else [hits for hits, probes in zip(expect_hits, all_probes.values()) for _ in probes]
@@ -2061,14 +2067,19 @@ class FlexProbeDesigner:
             for transcript_name, probes in list(all_probes.items()):
                 removed = []
                 for probe in probes:
+                    # Record the hits on every probe, including the ones that are
+                    # removed, so that the reason for a removal is auditable.
+                    probe.total_lhs_blast_hits = all_hits[curr_idx][0]
+                    probe.total_rhs_blast_hits = all_hits[curr_idx][1]
+                    probe.expected_blast_hits = expect_hits[curr_idx]
+                    probe.lhs_blast_hits = all_names[curr_idx][0]
+                    probe.rhs_blast_hits = all_names[curr_idx][1]
                     if curr_idx in to_remove:
                         removed.append(probe)
-                    else:
-                        probe.total_lhs_blast_hits = all_hits[curr_idx][0]
-                        probe.total_rhs_blast_hits = all_hits[curr_idx][1]
-                        probe.expected_blast_hits = expect_hits[curr_idx]
-                        probe.lhs_blast_hits = all_names[curr_idx][0]
-                        probe.rhs_blast_hits = all_names[curr_idx][1]
+                        print(f"  {transcript_name}: removed, "
+                              f"LHS hits {probe.total_lhs_blast_hits} {probe.lhs_blast_hits}, "
+                              f"RHS hits {probe.total_rhs_blast_hits} {probe.rhs_blast_hits}, "
+                              f"expected {probe.expected_blast_hits}")
                     curr_idx += 1
                 all_probes[transcript_name] = [probe for probe in probes if probe not in removed]
 
@@ -2108,6 +2119,16 @@ class FlexProbeDesigner:
         :param search_method: Force a specific search method. 'brute_force' for exhaustive search, 'optimization' for dual annealing. None for automatic selection.
         :return: The dataframe result. Or if visium is True, a tuple of the flex probe dataframe and the visium probe dataframe.
         """
+        if self.config.flex_0bp_genotyping:
+            # In 0bp genotyping mode the variant base is part of an oligo arm, so a '*' wildcard
+            # substitution would be ordered as part of the oligo. Stop before any design or output.
+            for name, sequence in transcript_sequences.items():
+                mutated_sequence = sequence[1] if isinstance(sequence, tuple) else sequence
+                if '*' in mutated_sequence:
+                    raise ValueError(f"'{name}': a '*' wildcard substitution cannot be designed in 0bp genotyping "
+                                     f"mode, because the variant base would be part of an oligo arm. "
+                                     f"Give the alternative base, or use gap-fill mode.")
+
         all_probes = dict()
 
         missing = []
@@ -2210,8 +2231,9 @@ class FlexProbeDesigner:
             for name in missing:
                 print(f"-{name}")
 
-        # If we are running with approximate search, we should filter out probes that have mismatches
-        if fast:
+        # Filter out probes with off-target hits. This requires the BLAST database,
+        # which is only built when BLAST is enabled (i.e. self.fast is False).
+        if not self.fast:
             lhs_seqs = [probe.lhs_gene_sequence for probes in all_probes.values() for probe in probes]
             rhs_seqs = [probe.rhs_gene_sequence for probes in all_probes.values() for probe in probes]
             expect_hits = None if not expect_hits else [hits for hits, probes in zip(expect_hits, all_probes.values()) for _ in probes]
@@ -2221,14 +2243,19 @@ class FlexProbeDesigner:
             for transcript_name, probes in list(all_probes.items()):
                 removed = []
                 for probe in probes:
+                    # Record the hits on every probe, including the ones that are
+                    # removed, so that the reason for a removal is auditable.
+                    probe.total_lhs_blast_hits = all_hits[curr_idx][0]
+                    probe.total_rhs_blast_hits = all_hits[curr_idx][1]
+                    probe.expected_blast_hits = expect_hits[curr_idx]
+                    probe.lhs_blast_hits = all_names[curr_idx][0]
+                    probe.rhs_blast_hits = all_names[curr_idx][1]
                     if curr_idx in to_remove:
                         removed.append(probe)
-                    else:
-                        probe.total_lhs_blast_hits = all_hits[curr_idx][0]
-                        probe.total_rhs_blast_hits = all_hits[curr_idx][1]
-                        probe.expected_blast_hits = expect_hits[curr_idx]
-                        probe.lhs_blast_hits = all_names[curr_idx][0]
-                        probe.rhs_blast_hits = all_names[curr_idx][1]
+                        print(f"  {transcript_name}: removed, "
+                              f"LHS hits {probe.total_lhs_blast_hits} {probe.lhs_blast_hits}, "
+                              f"RHS hits {probe.total_rhs_blast_hits} {probe.rhs_blast_hits}, "
+                              f"expected {probe.expected_blast_hits}")
                     curr_idx += 1
                 all_probes[transcript_name] = [probe for probe in probes if probe not in removed]
 
@@ -2245,5 +2272,8 @@ class FlexProbeDesigner:
             if isinstance(transcript_sequence, tuple):
                 transcript_sequence = transcript_sequence[0]
             n_hits, _ = self.blast_hits(transcript_sequence)
-            expect_hits.append(n_hits)
+            # A probe always hits the gene it was designed on. If the target is not found end to end
+            # in the background (e.g. a user-supplied or fusion sequence), still expect that one hit,
+            # matching the default used when BLAST is disabled.
+            expect_hits.append(max(n_hits, 1))
         return expect_hits
